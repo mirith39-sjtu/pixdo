@@ -1,0 +1,26 @@
+# ---------- Python ----------
+.venv/
+__pycache__/
+*.py[cod]
+
+# ---------- 运行时数据 / 隐私（不要提交） ----------
+cookies.pkl
+pixiv_history.db*
+tag_suggest_cache.json
+downloads/
+
+# ---------- 构建产物 / 安装包（安装包请看 Releases） ----------
+build/
+dist/
+*.apk
+*.exe
+
+# ---------- 临时脚本 ----------
+_*.ps1
+
+# ---------- Android 构建相关 ----------
+.gradle/
+local.properties
+.kotlin/
+captures/
+.idea/

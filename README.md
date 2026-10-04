@@ -1,0 +1,108 @@
+# pixdo
+
+> **pixiv 插画批量下载工具** — 按标签 + 点赞数筛选，批量下载你喜欢的作品。支持 Windows 桌面版与 Android 版。
+
+<p align="center">
+  <img src="icon_preview.png" width="420" alt="pixdo 图标预览">
+</p>
+
+## ✨ 功能特性
+
+- 按标签搜索 pixiv 插画，排序支持：综合热门 / 最新 / 男性向 / 女性向
+- 最低点赞数过滤、AI 生成作品过滤
+- R18 支持：包含 R18 / 仅 R18 / 不含，自动分 `safe`、`r18` 文件夹
+- **标签联想**：输入中文自动联想对应日文 Tag（如「天童凯伊」→ 天童ケイ）
+- 多页作品整组下载，文件按点赞数命名，方便排序浏览
+- **内置查重**：跨次运行自动跳过已处理作品；手动删除的图片下次运行自动补下
+- 图片直接保存到系统相册 / 本地文件夹，可用其它 App 浏览
+- 支持随时停止，日志实时显示进度
+
+## 📦 下载安装
+
+前往 **[Releases](https://github.com/mirith39-sjtu/pixdo/releases/latest)** 下载最新版：
+
+| 平台 | 文件 | 说明 |
+| --- | --- | --- |
+| Windows | `pixdo-v1.0.exe` | 免安装，双击即用（需本机装有 Edge / Chrome 用于登录） |
+| Android | `pixdo-v1.0.apk` | 支持 Android 8.0 及以上，直接安装 |
+
+## 📱 使用步骤（Android）
+
+1. 开启 VPN / 代理（需能正常访问 pixiv）
+2. 打开 App，点「登录」，在弹出的页面中登录 pixiv 账号（自动检测，成功后自动返回）
+3. （下载 R18 必需）在 pixiv 网页版确认已开启「设置 → 閲覧設定 → R-18作品の表示」
+4. 输入标签（支持中文联想日文 Tag），按需调整排序 / 数量 / 最低点赞 / R18 选项
+5. 点「开始爬取」，图片保存到相册 `Pictures/PixivScraper/<标签>/safe|r18/`
+
+## 💻 使用步骤（Windows）
+
+1. 开启 VPN / 代理（需能访问 pixiv）
+2. 双击 `pixdo-v1.0.exe`；首次运行会自动打开浏览器等待登录，登录完成后自动继续
+3. 在界面中设置标签、下载数量、最低点赞等参数，点「开始爬取」
+4. 图片保存在程序目录 `downloads/<标签>/safe|r18/`
+
+## 🌐 网络要求
+
+- 需能访问：`www.pixiv.net`、`accounts.pixiv.net`（登录）、`i.pximg.net`（图片 CDN）
+- 中国大陆网络无法直连 pixiv，必须使用 VPN / 代理；建议全局代理，或把本应用加入分应用代理
+- 登录页打不开 / 一直转圈：更换节点后重试
+
+## 🔞 R18 说明
+
+- 需处于登录状态，且账号已开启「设置 → 閲覧設定 → R-18作品の表示」
+- 「包含 R18」同时搜索普通与 R18 两条通道，避免漏掉；「仅 R18」只下载 R18 作品
+
+## 🔁 查重说明
+
+- 已下载且文件完整的作品会自动跳过，不重复下载
+- 手动删除图片后，下次运行会自动检测并补下
+- 「清空查重记录」后，所有作品重新参与下载
+
+## ⚠️ 使用风险（必读）
+
+- 本工具通过 pixiv 公开接口批量获取内容。虽然内置了请求间隔与限流自动重试，但**短时间内大量下载仍可能被判定为异常访问**，可能导致：接口限流、账号功能受限，甚至 **封号**
+- 建议：保持默认间隔、单次下载量不要过大、避免长时间连续运行；介意风险请使用小号登录
+- 下载内容仅供个人学习与收藏，**版权归原作者所有**，请勿传播或用于商业用途
+
+## ❓ 常见问题
+
+| 问题 | 解决方法 |
+| --- | --- |
+| 一直显示「未登录」 | 检查代理是否生效，再重新登录 |
+| 搜索无结果 | 检查标签拼写（推荐日文）、排序设置与代理 |
+| 提示 429 限流 | 程序会自动等待重试，属正常现象 |
+| Edge 启动失败 | 更新 Microsoft Edge 后重试（驱动会尝试自动匹配） |
+| Android 安装提示风险 | 系统对未知来源应用的常规提示，选择「仍要安装」即可 |
+
+## 🛠 从源码构建
+
+### Windows 桌面版（Python 3.11+）
+
+```bash
+pip install requests selenium pyinstaller
+python pixiv_gui.py                                    # 直接运行
+python -m PyInstaller --noconfirm PixivScraper.spec    # 打包单文件 exe
+```
+
+### Android 版（Kotlin + Jetpack Compose）
+
+```bash
+cd android-app
+./gradlew assembleDebug        # 需要 JDK 17 与 Android SDK 34
+# 产物：app/build/outputs/apk/debug/app-debug.apk
+```
+
+## 📁 项目结构
+
+```
+pixdo/
+├── pixiv_gui.py          # Windows 桌面版 GUI（tkinter）
+├── pixiv_scraper.py      # 核心爬取逻辑（可独立运行）
+├── PixivScraper.spec     # PyInstaller 打包配置
+└── android-app/          # Android 版（Kotlin + Jetpack Compose）
+    └── app/src/main/java/com/pixivscraper/
+```
+
+## ⚖️ 免责声明
+
+本项目仅供个人学习与技术研究使用。使用者需自行承担因使用本工具产生的一切风险与责任（包括但不限于账号封禁、数据丢失等）。请尊重创作者版权，下载内容请勿二次传播。
