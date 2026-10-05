@@ -11,6 +11,7 @@ data class ScraperConfig(
     val r18Only: Boolean = false,
     val dedup: Boolean = true,
     val dedupSkipFiltered: Boolean = true,
+    val notifyRun: Boolean = true,
 )
 
 /** 搜索结果里的作品条目 */

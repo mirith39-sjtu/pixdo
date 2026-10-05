@@ -62,6 +62,11 @@ import com.pixivscraper.ScraperConfig
 import com.pixivscraper.TagSuggestion
 import kotlinx.coroutines.delay
 
+// 每次 App 启动最多自动弹一次通知权限请求（防止在页面间切换时重复弹）
+private object NotifPermAutoGate {
+    @Volatile var asked = false
+}
+
 @Composable
 fun MainScreen(
     vm: MainViewModel,
@@ -78,11 +83,72 @@ fun MainScreen(
     var maxText by remember { mutableStateOf(config.maxImages.toString()) }
     var minText by remember { mutableStateOf(config.minLikes.toString()) }
 
+    // Android 13+ 通知权限：用于前台服务的进度通知（拒绝也能运行，只是看不到通知）
+    val notifyPermDeniedToast: () -> Unit = {
+        Toast.makeText(
+            context,
+            "通知权限未开启：任务会继续运行，但看不到进度通知\n可在 系统设置 → 应用 → pixdo → 通知 中开启",
+            Toast.LENGTH_LONG,
+        ).show()
+    }
+
+    // 点「开始爬取」时申请权限：无论允许与否都会开始任务
+    val notifPermLauncherRun = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (!granted) notifyPermDeniedToast()
+        vm.start()
+    }
+
+    // 打开「运行通知」开关时申请权限：只申请，不启动任务
+    val notifPermLauncherSwitch = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (!granted) notifyPermDeniedToast()
+    }
+
+    val notifPermNeeded: () -> Boolean = {
+        Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) != PackageManager.PERMISSION_GRANTED
+    }
+
+    // 一进入应用就自动申请通知权限（仅 Android 13+ 且尚未授权时）
+    val notifPermLauncherAuto = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { _ ->
+        // 静默处理：拒绝后的引导由「运行通知」开关 / 开始爬取处的提示负责，
+        // 避免每次打开 App 都弹 Toast 打扰用户
+    }
+
+    LaunchedEffect(Unit) {
+        if (!NotifPermAutoGate.asked && notifPermNeeded()) {
+            NotifPermAutoGate.asked = true
+            notifPermLauncherAuto.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    val promptNotifPerm: () -> Unit = {
+        if (notifPermNeeded()) {
+            notifPermLauncherSwitch.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    val beginRun: () -> Unit = {
+        if (vm.config.notifyRun && notifPermNeeded()) {
+            notifPermLauncherRun.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            vm.start()
+        }
+    }
+
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
-            vm.start()
+            beginRun()
         } else {
             Toast.makeText(context, "未授予存储权限，无法保存图片", Toast.LENGTH_LONG).show()
         }
@@ -97,7 +163,7 @@ fun MainScreen(
         ) {
             permLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         } else {
-            vm.start()
+            beginRun()
         }
     }
 
@@ -171,6 +237,7 @@ fun MainScreen(
                         vm.updateConfig { c -> c.copy(tag = t) }
                     },
                     fetchSuggestions = { kw -> vm.fetchTagSuggestions(kw) },
+                    onEnableNotify = promptNotifPerm,
                     maxText = maxText,
                     onMaxText = { raw ->
                         val t = raw.filter { it.isDigit() }.take(5)
@@ -270,6 +337,7 @@ private fun ConfigCard(
     tagText: String,
     onTagText: (String) -> Unit,
     fetchSuggestions: suspend (String) -> List<TagSuggestion>,
+    onEnableNotify: () -> Unit,
     maxText: String,
     onMaxText: (String) -> Unit,
     minText: String,
@@ -423,6 +491,10 @@ private fun ConfigCard(
             }
             SwitchRow("跳过已过滤作品（低赞/AI）", config.dedupSkipFiltered) { v ->
                 onChange { c -> c.copy(dedupSkipFiltered = v) }
+            }
+            SwitchRow("运行通知（后台 / 锁屏下载）", config.notifyRun) { v ->
+                onChange { c -> c.copy(notifyRun = v) }
+                if (v) onEnableNotify()
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {

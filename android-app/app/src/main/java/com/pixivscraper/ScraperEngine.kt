@@ -28,6 +28,8 @@ class ScraperEngine(private val context: Context) {
         config: ScraperConfig,
         log: (String) -> Unit,
         isStopped: () -> Boolean,
+        onDownloadStart: (() -> Unit)? = null,
+        onProgress: ((Int) -> Unit)? = null,
     ): RunResult {
         log("=".repeat(56))
         log("  pixdo · Android")
@@ -223,6 +225,7 @@ class ScraperEngine(private val context: Context) {
             // ---- 下载阶段 ----
             log("")
             log("[*] 开始下载...")
+            onDownloadStart?.invoke()
             var dl = 0
             val meta = ArrayList<DownloadMeta>()
 
@@ -281,6 +284,7 @@ class ScraperEngine(private val context: Context) {
 
                 if (ok > 0) {
                     dl++
+                    onProgress?.invoke(dl)
                     val tagStr = if (d.isR18) " [R18]" else " [safe]"
                     log("  [$dl/${config.maxImages}]$tagStr likes ${d.likeCount} ${d.title.take(40)} | $ok/${d.imageUrls.size}")
                     meta.add(DownloadMeta(d.id, d.title, d.author, d.likeCount, ok, d.imageUrls.size))

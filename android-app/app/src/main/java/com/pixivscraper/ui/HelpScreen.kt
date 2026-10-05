@@ -69,7 +69,8 @@ fun HelpScreen(onBack: () -> Unit) {
             "1. 开启 VPN / 代理（需能正常访问 pixiv）\n" +
                 "2. 首页点「登录」→ 完成 pixiv 账号登录（自动检测，成功后自动返回）\n" +
                 "3. 输入标签（支持中文联想日文 Tag），按需调整排序 / 数量 / 点赞 / R18\n" +
-                "4. 点「开始爬取」；图片保存到相册 Pictures/PixivScraper/<标签>/safe|r18/"
+                "4. 点「开始爬取」；图片保存到相册 Pictures/PixivScraper/<标签>/safe|r18/\n" +
+                "5. 通知栏显示进度、可切后台 / 锁屏继续下载（首页可关闭「运行通知」）；点「停止」可中止"
         )
 
         SectionTitle("网络要求")
@@ -106,7 +107,7 @@ fun HelpScreen(onBack: () -> Unit) {
 
         Spacer(Modifier.height(24.dp))
         Text(
-            text = "pixdo v1.0 · 仅供个人学习使用",
+            text = "pixdo v1.1 · 仅供个人学习使用",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

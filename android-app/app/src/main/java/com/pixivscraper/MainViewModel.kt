@@ -5,6 +5,7 @@ import android.content.Context
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -64,27 +65,56 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         logs.value = emptyList()
         statusText = "运行中…"
         val cfg = config
+
+        // 前台服务 + 常驻通知：后台/锁屏时防止系统回收进程，并展示运行进度
+        RunState.begin(cfg.maxImages)
+        if (cfg.notifyRun) {
+            if (!NotificationManagerCompat.from(getApplication()).areNotificationsEnabled()) {
+                appendLog("[!] 通知未开启：任务会继续，但通知栏看不到进度（设置 → 应用 → pixdo → 通知）")
+            }
+            ScrapeService.start(getApplication())
+        } else {
+            appendLog("[*] 已关闭「运行通知」：切后台可能被系统中断，建议保持 App 在前台")
+        }
+
         job = viewModelScope.launch(Dispatchers.IO) {
-            val result = try {
-                ScraperEngine(getApplication()).run(cfg, ::appendLog) { stopFlag }
-            } catch (e: Exception) {
-                RunResult(false, reason = e.message ?: "未知错误")
-            }
-            running = false
-            statusText = if (result.ok) {
-                buildString {
-                    append("完成 — 下载 ${result.downloaded} 个作品")
-                    if (result.skippedDup > 0) append("，查重跳过 ${result.skippedDup} 个")
+            try {
+                val result = try {
+                    ScraperEngine(getApplication()).run(
+                        cfg,
+                        ::appendLog,
+                        isStopped = { stopFlag || RunState.stopFlag },
+                        onDownloadStart = { RunState.enterDownload() },
+                        onProgress = { done -> RunState.progress(done) },
+                    )
+                } catch (e: Exception) {
+                    RunResult(false, reason = e.message ?: "未知错误")
                 }
-            } else {
-                "终止 — ${result.reason}"
+                // 结束快照：前台服务据此弹出「完成通知」
+                RunState.endDownloaded = result.downloaded
+                RunState.endSkipped = result.skippedDup
+                RunState.endReason = if (result.ok) null
+                    else result.reason.ifBlank { "任务未完成，请查看应用内日志" }
+                running = false
+                statusText = if (result.ok) {
+                    buildString {
+                        append("完成 — 下载 ${result.downloaded} 个作品")
+                        if (result.skippedDup > 0) append("，查重跳过 ${result.skippedDup} 个")
+                    }
+                } else {
+                    "终止 — ${result.reason}"
+                }
+                refreshLogin()
+            } finally {
+                // 无论正常结束还是被取消，都收起通知
+                RunState.finish()
             }
-            refreshLogin()
         }
     }
 
     fun stop() {
         stopFlag = true
+        RunState.stopFlag = true
         appendLog("[!] 已请求停止（等待当前步骤完成）")
     }
 
@@ -132,6 +162,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 r18Only = sp.getBoolean("r18Only", d.r18Only),
                 dedup = sp.getBoolean("dedup", d.dedup),
                 dedupSkipFiltered = sp.getBoolean("dedupSkipFiltered", d.dedupSkipFiltered),
+                notifyRun = sp.getBoolean("notifyRun", d.notifyRun),
             )
         }
 
@@ -146,6 +177,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 .putBoolean("r18Only", c.r18Only)
                 .putBoolean("dedup", c.dedup)
                 .putBoolean("dedupSkipFiltered", c.dedupSkipFiltered)
+                .putBoolean("notifyRun", c.notifyRun)
                 .apply()
         }
     }
