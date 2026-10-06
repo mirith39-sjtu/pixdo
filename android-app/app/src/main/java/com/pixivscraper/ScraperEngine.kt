@@ -83,59 +83,155 @@ class ScraperEngine(private val context: Context) {
                 }
             }
 
-            // ---- 搜索阶段 ----
+            // ---- 搜索 + 详情筛选（不足目标数量时自动扩大扫描） ----
             val searchModes = when {
                 config.r18Only -> listOf("r18")
                 config.includeR18 -> listOf("all", "r18")
                 else -> listOf("all")
             }
-            val candLimit = config.maxImages * 5
+            val target = config.maxImages
             val candidates = ArrayList<WorkBrief>()
             val seen = HashSet<String>()
+            val pages = HashMap<String, Int>()
+            val modeDone = HashMap<String, Boolean>()
+            searchModes.forEach {
+                pages[it] = 1
+                modeDone[it] = false
+            }
+            val processed = HashSet<String>()
             var skippedDup = 0
             var r18Cand = 0
+            var pagesScanned = 0
+
+            val details = ArrayList<WorkDetail>()
+            var lowCount = 0
+            var aiCount = 0
+            var noImgCount = 0
+            var r18SkipCount = 0
+            var safeSkipCount = 0
+
+            val modeLabel = when {
+                config.r18Only -> "仅R18"
+                !config.includeR18 -> "不含R18"
+                else -> "含R18"
+            }
 
             log("")
             log("[*] 搜索作品...")
-            for (mode in searchModes) {
-                var page = 1
-                while (candidates.size < candLimit && page <= 50) {
+            log("[*] 获取详情 (≥${config.minLikes}赞, 过滤AI, $modeLabel)...")
+            onPhase?.invoke("正在搜索作品…")
+
+            // 关键：筛选出的作品不足目标数量时，继续翻页扩大扫描，直到满足 / 搜索穷尽
+            while (details.size < target) {
+                // ---- 补充候选：保证「未处理候选」至少有目标数量（每个 mode 至少翻过第 1 页）----
+                for (mode in searchModes) {
+                    while ((candidates.size - processed.size < target || pages[mode] == 1) &&
+                        modeDone[mode] != true && (pages[mode] ?: 1) <= 50
+                    ) {
+                        if (isStopped()) return RunResult(false, reason = "用户停止")
+                        val page = pages[mode] ?: 1
+                        val items = PixivApi.search(config.tag, config.order, page, mode)
+                        pagesScanned++
+                        if (items.isEmpty()) {
+                            log("  [$mode] 第 $page 页无结果，结束")
+                            modeDone[mode] = true
+                            break
+                        }
+                        var added = 0
+                        var dup = 0
+                        for (it in items) {
+                            if (!seen.add(it.id)) continue
+                            val rec = records[it.id]
+                            if (config.dedup && rec != null &&
+                                shouldSkip(rec, index, db, config.dedupSkipFiltered, it.illustType == 2)
+                            ) {
+                                dup++
+                                skippedDup++
+                                continue
+                            }
+                            candidates.add(it)
+                            if (it.xRestrict > 0) r18Cand++
+                            added++
+                        }
+                        if (added > 0 || dup > 0) {
+                            log("  [$mode] 第 $page 页: 新增 $added，查重跳过 $dup（累计新 ${candidates.size}，共跳过 $skippedDup）")
+                        } else {
+                            modeDone[mode] = true // 整页都是已见过的条目（翻页未生效），避免死循环
+                            break
+                        }
+                        onPhase?.invoke("正在搜索 · 第 $page 页 · 候选 ${candidates.size} 个")
+                        pages[mode] = page + 1
+                        delay(apiDelayMs)
+                    }
+                }
+
+                // ---- 详情筛选：处理所有尚未筛选的候选 ----
+                for (c in candidates) {
+                    if (!processed.add(c.id)) continue
                     if (isStopped()) return RunResult(false, reason = "用户停止")
-                    val items = PixivApi.search(config.tag, config.order, page, mode)
-                    if (items.isEmpty()) {
-                        log("  [$mode] 第 $page 页无结果，结束")
+                    val d = PixivApi.detail(c.id)
+                    if (d == null) {
+                        noImgCount++
+                        log("  [${processed.size}/${candidates.size}] ${c.id}: ${c.title.take(30)} x 无图")
+                        delay(apiDelayMs)
+                        continue
+                    }
+                    val likes = d.likeCount
+                    val imgNum = d.imageUrls.size
+                    val label: String
+                    when {
+                        config.minLikes > 0 && likes < config.minLikes -> {
+                            lowCount++
+                            label = "x ${likes}赞"
+                            safeCall { db?.upsertFiltered(d, "low_likes") }
+                        }
+                        imgNum == 0 -> {
+                            noImgCount++
+                            label = "x 无图" // 不写入查重库: 可能是临时失败, 下次重试
+                        }
+                        config.filterAi && hasAiTag(d.tags) -> {
+                            aiCount++
+                            label = "x AI"
+                            safeCall { db?.upsertFiltered(d, "ai") }
+                        }
+                        !config.includeR18 && d.isR18 -> {
+                            r18SkipCount++
+                            label = "x R18"
+                            safeCall { db?.upsertFiltered(d, "r18_excluded") }
+                        }
+                        config.r18Only && !d.isR18 -> {
+                            safeSkipCount++
+                            label = "x 非R18"
+                            safeCall { db?.upsertFiltered(d, "safe_excluded") }
+                        }
+                        else -> {
+                            label = "OK likes$likes ${imgNum}图"
+                            details.add(d)
+                        }
+                    }
+                    log("  [${processed.size}/${candidates.size}] ${c.id}: ${d.title.take(30)} $label")
+                    onPhase?.invoke("正在筛选详情 ${processed.size}/${candidates.size} · 已通过 ${details.size}")
+                    delay(apiDelayMs)
+                    if (lowCount >= 20 && details.size >= target) {
+                        log("  [*] 足够候选，停止详情获取")
                         break
                     }
-                    var added = 0
-                    var dup = 0
-                    for (it in items) {
-                        if (!seen.add(it.id)) continue
-                        val rec = records[it.id]
-                        if (config.dedup && rec != null &&
-                            shouldSkip(rec, index, db, config.dedupSkipFiltered, it.illustType == 2)
-                        ) {
-                            dup++
-                            skippedDup++
-                            continue
-                        }
-                        candidates.add(it)
-                        if (it.xRestrict > 0) r18Cand++
-                        added++
+                    if (details.size >= target * 3) {
+                        log("  [*] 候选充足，停止详情获取")
+                        break
                     }
-                    if (added > 0 || dup > 0) {
-                        log("  [$mode] 第 $page 页: 新增 $added，查重跳过 $dup（累计新 ${candidates.size}，共跳过 $skippedDup）")
-                    } else {
-                        break // 整页都是本轮已见过的条目（翻页未生效），避免死循环
-                    }
-                    onPhase?.invoke("正在搜索 · 第 $page 页 · 候选 ${candidates.size} 个")
-                    page++
-                    delay(apiDelayMs)
+                }
+
+                if (details.size >= target) break
+                if (searchModes.all { modeDone[it] == true || (pages[it] ?: 1) > 50 }) {
+                    log("[*] 搜索结果已穷尽（共扫描 $pagesScanned 页）")
+                    break
                 }
             }
 
             if (skippedDup > 0) log("[*] 查重: 跳过 $skippedDup 个已处理过的作品")
             log("")
-            log("[*] 共收集 ${candidates.size} 个作品（其中标记 R18 的 $r18Cand 个）")
+            log("[*] 共收集 ${candidates.size} 个作品（其中标记 R18 的 $r18Cand 个），已扫描 $pagesScanned 页")
             if (candidates.isEmpty()) {
                 if (skippedDup > 0) {
                     log("[*] 没有新作品：搜索范围内的作品都已处理过（查重跳过）")
@@ -149,79 +245,11 @@ class ScraperEngine(private val context: Context) {
                 log("    或账号未开启「R-18作品の表示」（设置 → 閲覧設定）。")
             }
 
-            // ---- 详情阶段 ----
-            log("")
-            val modeLabel = when {
-                config.r18Only -> "仅R18"
-                !config.includeR18 -> "不含R18"
-                else -> "含R18"
-            }
-            log("[*] 获取详情 (≥${config.minLikes}赞, 过滤AI, $modeLabel)...")
-            onPhase?.invoke("正在筛选详情 0/${candidates.size}")
-            val details = ArrayList<WorkDetail>()
-            var lowCount = 0
-            var aiCount = 0
-            var noImgCount = 0
-            var r18SkipCount = 0
-            var safeSkipCount = 0
-
-            for ((i, c) in candidates.withIndex()) {
-                if (isStopped()) return RunResult(false, reason = "用户停止")
-                val d = PixivApi.detail(c.id)
-                if (d == null) {
-                    noImgCount++
-                    log("  [${i + 1}/${candidates.size}] ${c.id}: ${c.title.take(30)} x 无图")
-                    delay(apiDelayMs)
-                    continue
-                }
-                val likes = d.likeCount
-                val imgNum = d.imageUrls.size
-                val label: String
-                when {
-                    config.minLikes > 0 && likes < config.minLikes -> {
-                        lowCount++
-                        label = "x ${likes}赞"
-                        safeCall { db?.upsertFiltered(d, "low_likes") }
-                    }
-                    imgNum == 0 -> {
-                        noImgCount++
-                        label = "x 无图" // 不写入查重库: 可能是临时失败, 下次重试
-                    }
-                    config.filterAi && hasAiTag(d.tags) -> {
-                        aiCount++
-                        label = "x AI"
-                        safeCall { db?.upsertFiltered(d, "ai") }
-                    }
-                    !config.includeR18 && d.isR18 -> {
-                        r18SkipCount++
-                        label = "x R18"
-                        safeCall { db?.upsertFiltered(d, "r18_excluded") }
-                    }
-                    config.r18Only && !d.isR18 -> {
-                        safeSkipCount++
-                        label = "x 非R18"
-                        safeCall { db?.upsertFiltered(d, "safe_excluded") }
-                    }
-                    else -> {
-                        label = "OK likes$likes ${imgNum}图"
-                        details.add(d)
-                    }
-                }
-                log("  [${i + 1}/${candidates.size}] ${c.id}: ${d.title.take(30)} $label")
-                onPhase?.invoke("正在筛选详情 ${i + 1}/${candidates.size} · 已通过 ${details.size}")
-                delay(apiDelayMs)
-                if (lowCount >= 20 && details.size >= config.maxImages) {
-                    log("  [*] 足够候选，停止详情获取")
-                    break
-                }
-                if (details.size >= config.maxImages * 3) {
-                    log("  [*] 候选充足，停止详情获取")
-                    break
-                }
-            }
-
             log("")
             log("[*] 低赞:$lowCount AI:$aiCount 无图:$noImgCount R18跳过:$r18SkipCount 非R18跳过:$safeSkipCount -> 有效:${details.size}")
+            if (details.size < target) {
+                log("[!] 满足条件的作品只有 ${details.size} 个（目标 $target）：已尽力扩大扫描，可尝试降低最低点赞或关闭 AI 过滤")
+            }
             if (details.isEmpty()) {
                 log("[*] 没有符合条件的作品可下载")
                 return RunResult(true, downloaded = 0, skippedDup = skippedDup)

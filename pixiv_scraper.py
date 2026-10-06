@@ -1271,46 +1271,126 @@ def _main_impl():
             search_modes = ["all", "r18"]          # 含 R18: 补一轮 R18 搜索, 避免漏掉 R18 作品
         else:
             search_modes = ["all"]
-        cand_limit = CONFIG["max_images"] * 5
+        target = CONFIG["max_images"]
         candidates, seen = [], set()
+        pages = {m: 1 for m in search_modes}       # 各 mode 下一待翻页码
+        mode_done = {m: False for m in search_modes}
+        processed = set()                          # 已走过详情筛选的候选 id
         r18_cand = 0
         skipped_dup = 0
-        for mode in search_modes:
-            page = 1
-            while len(candidates) < cand_limit and page <= 50:
+        pages_scanned = 0
+
+        min_likes = CONFIG["min_likes"]
+        include_r18 = CONFIG["include_r18"]
+        r18_only = CONFIG.get("r18_only", False)
+        mode_label = ("仅R18" if r18_only else ("不含R18" if not include_r18 else "含R18"))
+        _log(f"\n[*] 获取详情 (≥{min_likes}赞, 过滤AI, {mode_label})...")
+
+        details = []
+        stats = {"low": 0, "ai": 0, "noimg": 0, "r18": 0, "safe": 0}
+
+        # 关键：筛选出的作品不足目标数量时，继续翻页扩大扫描，直到满足 / 搜索穷尽
+        while len(details) < target:
+            # ---- 补充候选：保证“未处理候选”至少有 target 个（每个 mode 至少翻过第 1 页）----
+            for mode in search_modes:
+                while (len(candidates) - len(processed) < target or pages[mode] == 1) \
+                        and not mode_done[mode] and pages[mode] <= 50:
+                    if _should_stop():
+                        return {"ok": False, "reason": "用户停止"}
+                    items = search_api(api, CONFIG["tag"], CONFIG["order"],
+                                       pages[mode], mode)
+                    pages_scanned += 1
+                    if not items:
+                        _log(f"  [{mode}] 第 {pages[mode]} 页无结果，结束")
+                        mode_done[mode] = True
+                        break
+                    added = dup = 0
+                    for it in items:
+                        if it["illust_id"] in seen:
+                            continue
+                        seen.add(it["illust_id"])
+                        if it.get("illust_type") == 1:
+                            continue                      # 漫画暂不下载
+                        if history and history.should_skip(
+                                it["illust_id"], it.get("illust_type") == 2)[0]:
+                            dup += 1
+                            skipped_dup += 1
+                            continue
+                        candidates.append(it)
+                        if it.get("x_restrict"):
+                            r18_cand += 1
+                        added += 1
+                    if added or dup:
+                        _log(f"  [{mode}] 第 {pages[mode]} 页: 新增 {added}，查重跳过 {dup}"
+                             f" (累计新 {len(candidates)}，共跳过 {skipped_dup})")
+                    else:
+                        mode_done[mode] = True        # 整页都是见过的条目（翻页未生效）
+                        break
+                    pages[mode] += 1
+                    time.sleep(CONFIG["api_delay"])
+
+            # ---- 详情筛选：处理所有尚未筛选的候选 ----
+            for c in candidates:
+                if c["illust_id"] in processed:
+                    continue
                 if _should_stop():
                     return {"ok": False, "reason": "用户停止"}
-                items = search_api(api, CONFIG["tag"], CONFIG["order"], page, mode)
-                if not items:
-                    _log(f"  [{mode}] 第 {page} 页无结果，结束")
-                    break
-                added = dup = 0
-                for it in items:
-                    if it["illust_id"] in seen:
-                        continue
-                    seen.add(it["illust_id"])
-                    if it.get("illust_type") == 1:
-                        continue                      # 漫画暂不下载
-                    if history and history.should_skip(
-                            it["illust_id"], it.get("illust_type") == 2)[0]:
-                        dup += 1
-                        skipped_dup += 1
-                        continue
-                    candidates.append(it)
-                    if it.get("x_restrict"):
-                        r18_cand += 1
-                    added += 1
-                if added or dup:
-                    _log(f"  [{mode}] 第 {page} 页: 新增 {added}，查重跳过 {dup}"
-                         f" (累计新 {len(candidates)}，共跳过 {skipped_dup})")
+                processed.add(c["illust_id"])
+                d = detail_api(api, c["illust_id"])
+                d["title"] = d["title"] or c.get("title", "")
+                d["author"] = d["author"] or c.get("user_name", "")
+                d["author_id"] = d["author_id"] or c.get("user_id", "")
+                likes = d["like_count"]
+                imgs = len(d["image_urls"])
+
+                if min_likes and likes < min_likes:
+                    stats["low"] += 1
+                    lbl = f"x {likes}赞"
+                    if history:
+                        history.record_filtered(d, "low_likes")
+                elif imgs == 0:
+                    stats["noimg"] += 1
+                    lbl = "x 无图"      # 不写入查重库: 可能是临时失败, 下次重试
+                elif CONFIG["filter_ai"] and has_ai_tag(d["tags"]):
+                    stats["ai"] += 1
+                    lbl = "x AI"
+                    if history:
+                        history.record_filtered(d, "ai")
+                elif not include_r18 and d["is_r18"]:
+                    stats["r18"] += 1
+                    lbl = "x R18"
+                    if history:
+                        history.record_filtered(d, "r18_excluded")
+                elif r18_only and not d["is_r18"]:
+                    stats["safe"] += 1
+                    lbl = "x 非R18"
+                    if history:
+                        history.record_filtered(d, "safe_excluded")
                 else:
-                    break   # 整页都是本轮已见过的条目（翻页未生效），避免死循环
-                page += 1
+                    lbl = f"OK likes{likes} {imgs}图"
+                    details.append(d)
+
+                _log(f"  [{len(processed)}/{len(candidates)}] {c['illust_id']}: "
+                     f"{c['title'][:30]} {lbl}")
                 time.sleep(CONFIG["api_delay"])
+
+                if stats["low"] >= 20 and len(details) >= target:
+                    _log("  [*] 足够候选，停止详情获取")
+                    break
+                if len(details) >= target * 3:
+                    _log("  [*] 候选充足，停止详情获取")
+                    break
+
+            if len(details) >= target:
+                break
+            if all(mode_done[m] or pages[m] > 50 for m in search_modes):
+                _log(f"[*] 搜索结果已穷尽（共扫描 {pages_scanned} 页）")
+                break
 
         if skipped_dup:
             _log(f"[*] 查重: 跳过 {skipped_dup} 个已处理过的作品")
-        _log(f"\n[*] 共收集 {len(candidates)} 个作品（其中标记 R18 的 {r18_cand} 个）")
+        _log(f"\n[*] 共收集 {len(candidates)} 个作品（其中标记 R18 的 {r18_cand} 个）"
+             f"，已扫描 {pages_scanned} 页")
         if not candidates:
             if skipped_dup:
                 _log("[*] 没有新作品：搜索范围内的作品都已处理过（查重跳过）")
@@ -1322,71 +1402,18 @@ def _main_impl():
             _log("[!] 搜索结果里没有 R18 作品：可能是未登录（游客）、Cookie 失效，")
             _log("    或账号未开启「R-18作品の表示」（设置 → 閲覧設定）。")
 
-        if _should_stop():
-            return {"ok": False, "reason": "用户停止"}
-
-        min_likes = CONFIG["min_likes"]
-        include_r18 = CONFIG["include_r18"]
-        r18_only = CONFIG.get("r18_only", False)
-        mode_label = ("仅R18" if r18_only else ("不含R18" if not include_r18 else "含R18"))
-        _log(f"\n[*] 获取详情 (≥{min_likes}赞, 过滤AI, {mode_label})...")
-
-        details = []
-        stats = {"low": 0, "ai": 0, "noimg": 0, "r18": 0, "safe": 0}
-
-        for i, c in enumerate(candidates):
-            if _should_stop():
-                return {"ok": False, "reason": "用户停止"}
-            d = detail_api(api, c["illust_id"])
-            d["title"] = d["title"] or c.get("title", "")
-            d["author"] = d["author"] or c.get("user_name", "")
-            d["author_id"] = d["author_id"] or c.get("user_id", "")
-            likes = d["like_count"]
-            imgs = len(d["image_urls"])
-
-            if min_likes and likes < min_likes:
-                stats["low"] += 1
-                lbl = f"x {likes}赞"
-                if history:
-                    history.record_filtered(d, "low_likes")
-            elif imgs == 0:
-                stats["noimg"] += 1
-                lbl = "x 无图"          # 不写入查重库: 可能是临时失败, 下次重试
-            elif CONFIG["filter_ai"] and has_ai_tag(d["tags"]):
-                stats["ai"] += 1
-                lbl = "x AI"
-                if history:
-                    history.record_filtered(d, "ai")
-            elif not include_r18 and d["is_r18"]:
-                stats["r18"] += 1
-                lbl = "x R18"
-                if history:
-                    history.record_filtered(d, "r18_excluded")
-            elif r18_only and not d["is_r18"]:
-                stats["safe"] += 1
-                lbl = "x 非R18"
-                if history:
-                    history.record_filtered(d, "safe_excluded")
-            else:
-                lbl = f"OK likes{likes} {imgs}图"
-                details.append(d)
-
-            _log(f"  [{i+1}/{len(candidates)}] {c['illust_id']}: "
-                 f"{c['title'][:30]} {lbl}")
-            time.sleep(CONFIG["api_delay"])
-
-            if stats["low"] >= 20 and len(details) >= CONFIG["max_images"]:
-                _log("  [*] 足够候选，停止详情获取")
-                break
-            if len(details) >= CONFIG["max_images"] * 3:
-                _log("  [*] 候选充足，停止详情获取")
-                break
-
         _log(f"\n[*] 低赞:{stats['low']} AI:{stats['ai']} 无图:{stats['noimg']}"
              f" R18跳过:{stats['r18']} 非R18跳过:{stats['safe']} -> 有效:{len(details)}")
+        if len(details) < target:
+            _log(f"[!] 满足条件的作品只有 {len(details)} 个（目标 {target}）："
+                 f"已尽力扩大扫描，可尝试降低最低点赞或关闭 AI 过滤")
 
         if _should_stop():
             return {"ok": False, "reason": "用户停止"}
+
+        if not details:
+            _log("[*] 没有符合条件的作品可下载")
+            return {"ok": True, "downloaded": 0, "skipped_dup": skipped_dup}
 
         details.sort(key=lambda x: x["like_count"], reverse=True)
         if details:
