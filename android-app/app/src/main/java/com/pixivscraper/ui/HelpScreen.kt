@@ -69,7 +69,7 @@ fun HelpScreen(onBack: () -> Unit) {
             "1. 开启 VPN / 代理（需能正常访问 pixiv）\n" +
                 "2. 首页点「登录」→ 完成 pixiv 账号登录（自动检测，成功后自动返回）\n" +
                 "3. 输入标签（支持中文联想日文 Tag），按需调整排序 / 数量 / 点赞 / R18\n" +
-                "4. 点「开始爬取」；图片保存到相册 Pictures/PixivScraper/<标签>/safe|r18/\n" +
+                "4. 点「开始爬取」；图片保存到相册 Pictures/PixivScraper/<标签>-safe | -r18/\n" +
                 "5. 通知栏显示进度、可切后台 / 锁屏继续下载（首页可关闭「运行通知」）；点「停止」可中止"
         )
 
@@ -84,6 +84,12 @@ fun HelpScreen(onBack: () -> Unit) {
         Body(
             "· 需已登录，且账号已开启「设置 → 閲覧設定 → R-18作品の表示」\n" +
                 "· 「包含R18」同时搜索普通与 R18 两条通道；「仅R18」只下载 R18 作品"
+        )
+
+        SectionTitle("动图（うごイラ）说明")
+        Body(
+            "· 动图会自动下载帧序列并合成为可播放的 GIF（长边 600px）\n" +
+                "· 合成为一步完成，帧数多时需要一些时间，属正常现象"
         )
 
         SectionTitle("AI 作品过滤建议")
@@ -102,12 +108,16 @@ fun HelpScreen(onBack: () -> Unit) {
         Body(
             "· 一直显示「未登录」→ 检查代理是否生效，再重新登录\n" +
                 "· 搜索无结果 → 检查标签拼写（推荐日文）与代理\n" +
-                "· 提示 429 限流 → 程序会自动等待重试，属正常现象"
+                "· 提示 429 限流 → 程序会自动等待重试，属正常现象\n" +
+                "· 后台筛选 / 下载中断 → 设置 → 应用 → pixdo → 电池 → 设为「无限制」\n" +
+                "   （部分系统会限制后台联网；应用已使用前台服务 + 唤醒锁保活）\n" +
+                "· 中文联想不出结果 → 用更短的词头试试（如「百合园」）；\n" +
+                "   角色名末尾常是假名，只输名字片段需先查过相关标签"
         )
 
         Spacer(Modifier.height(24.dp))
         Text(
-            text = "pixdo v1.1 · 仅供个人学习使用",
+            text = "pixdo v1.2 · 仅供个人学习使用",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

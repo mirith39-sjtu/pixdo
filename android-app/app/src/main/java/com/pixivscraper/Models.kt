@@ -14,13 +14,14 @@ data class ScraperConfig(
     val notifyRun: Boolean = true,
 )
 
-/** 搜索结果里的作品条目 */
+/** 搜索结果里的作品条目（illustType: 0=插画 1=漫画 2=动图） */
 data class WorkBrief(
     val id: String,
     val title: String,
     val userName: String,
     val pageCount: Int,
     val xRestrict: Int,
+    val illustType: Int = 0,
 )
 
 /** 作品详情 */
@@ -37,6 +38,22 @@ data class WorkDetail(
     val tags: List<String>,
     val imageUrls: List<String>,
     val url: String,
+    val illustType: Int = 0,
+) {
+    /** 动图（ugoira）：需要走 ugoira_meta 下载帧序列 zip 合成 GIF */
+    val isUgoira: Boolean get() = illustType == 2
+}
+
+/** 动图元信息：zip 地址 + 逐帧延迟 */
+data class UgoiraMeta(
+    val zipUrl: String,
+    val frames: List<UgoiraFrame>,
+)
+
+/** 动图的一帧：文件名 + 延迟（毫秒） */
+data class UgoiraFrame(
+    val file: String,
+    val delayMs: Int,
 )
 
 /** 一次运行的结果 */

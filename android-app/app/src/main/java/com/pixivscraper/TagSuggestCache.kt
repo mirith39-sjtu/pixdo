@@ -51,10 +51,11 @@ class TagSuggestCache(context: Context) {
         store(root)
     }
 
-    /** 离线兜底：在标签池里做子串匹配（名称/翻译），前缀优先、热度次之 */
+    /** 离线兜底：在标签池里做子串匹配（名称/翻译），简繁与异体字归一后匹配；前缀优先、热度次之 */
     fun searchPool(keyword: String, limit: Int = 10): List<TagSuggestion> {
         val kw = keyword.lowercase()
         if (kw.isEmpty()) return emptyList()
+        val kwc = TagSuggester.canon(kw)
         val pool = load().optJSONObject("pool") ?: return emptyList()
         val scored = ArrayList<Triple<Int, Long, TagSuggestion>>()
         val keys = pool.keys()
@@ -64,8 +65,13 @@ class TagSuggestCache(context: Context) {
             val trans = o.optString("translation")
             val nl = name.lowercase()
             val tl = trans.lowercase()
-            if (kw in nl || (trans.isNotEmpty() && kw in tl)) {
-                val prefix = nl.startsWith(kw) || tl.startsWith(kw)
+            val nlc = TagSuggester.canon(nl)
+            val tlc = if (tl.isNotEmpty()) TagSuggester.canon(tl) else ""
+            val hit = kw in nl || (tl.isNotEmpty() && kw in tl) ||
+                (kwc.isNotEmpty() && (kwc in nlc || (tlc.isNotEmpty() && kwc in tlc)))
+            if (hit) {
+                val prefix = nl.startsWith(kw) || (tl.isNotEmpty() && tl.startsWith(kw)) ||
+                    (kwc.isNotEmpty() && (nlc.startsWith(kwc) || (tlc.isNotEmpty() && tlc.startsWith(kwc))))
                 scored.add(
                     Triple(if (prefix) 0 else 1, -o.optLong("access_count"), objToSuggestion(name, o))
                 )

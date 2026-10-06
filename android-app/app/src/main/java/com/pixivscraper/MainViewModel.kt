@@ -10,6 +10,9 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -86,6 +89,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         isStopped = { stopFlag || RunState.stopFlag },
                         onDownloadStart = { RunState.enterDownload() },
                         onProgress = { done -> RunState.progress(done) },
+                        onPhase = { text -> RunState.updatePhase(text) },
                     )
                 } catch (e: Exception) {
                     RunResult(false, reason = e.message ?: "未知错误")
@@ -122,7 +126,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private var tagCache: TagSuggestCache? = null
 
-    /** 标签联想：本地缓存优先 → 在线查询 → 离线池兜底（与 PC 端一致） */
+    /**
+     * 标签联想：本地缓存优先 → 在线多层查询 → 离线池兜底。
+     * 在线查询做「原文 + 简繁变体 + 逐级去尾」：中文名的尾部常是假名
+     * （如 百合园圣娅 → 百合園セイア），而 pixiv 联想接口只做前缀匹配，必须靠去尾命中。
+     */
     suspend fun fetchTagSuggestions(keyword: String): List<TagSuggestion> =
         withContext(Dispatchers.IO) {
             val kw = keyword.trim()
@@ -130,14 +138,44 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val cache = tagCache ?: TagSuggestCache(getApplication()).also { tagCache = it }
             val cached = cache.getQuery(kw)
             if (!cached.isNullOrEmpty()) return@withContext cached
-            val live = PixivApi.suggestTags(kw)
-            if (live.isNotEmpty()) {
-                cache.saveQuery(kw, live)
-                live
+
+            val merged = LinkedHashMap<String, TagSuggestion>()
+            for (level in TagSuggester.queryLevels(kw)) {
+                val results = coroutineScope {
+                    level.map { v -> async { PixivApi.suggestTags(v) } }.awaitAll()
+                }
+                results.forEach { list -> list.forEach { mergeSuggestion(merged, it) } }
+                if (merged.size >= 6) break
+            }
+
+            if (merged.isNotEmpty()) {
+                val ranked = merged.values
+                    .sortedWith(
+                        compareByDescending<TagSuggestion> { TagSuggester.score(kw, it) }
+                            .thenByDescending { it.accessCount }
+                    )
+                    .take(10)
+                cache.saveQuery(kw, ranked)
+                ranked
             } else {
                 cache.searchPool(kw, 10)
             }
         }
+
+    /** 合并同一个 tag：优先保留带中文翻译的条目，其次保留热度更高的 */
+    private fun mergeSuggestion(merged: LinkedHashMap<String, TagSuggestion>, s: TagSuggestion) {
+        val old = merged[s.tagName]
+        if (old == null) {
+            merged[s.tagName] = s
+            return
+        }
+        val preferNew = when {
+            old.translation.isEmpty() && s.translation.isNotEmpty() -> true
+            old.translation.isNotEmpty() && s.translation.isEmpty() -> false
+            else -> s.accessCount > old.accessCount
+        }
+        if (preferNew) merged[s.tagName] = s
+    }
 
     private fun appendLog(msg: String) {
         logs.update { old ->

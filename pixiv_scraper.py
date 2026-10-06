@@ -5,10 +5,15 @@ Pixiv 图片爬虫 — 按点赞数爬取指定 Tag 下的热门图片
 首次运行需手动登录，之后自动复用 Cookie。
 """
 
-import os, re, json, time, random, pickle, urllib.parse, sys, subprocess, threading, traceback, sqlite3
+import os, re, io, json, time, random, pickle, tempfile, urllib.parse, sys, subprocess, threading, traceback, sqlite3, zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import requests
+try:
+    from PIL import Image      # 仅动图合成为 GIF 需要；缺失时不影响其它功能
+except Exception:
+    Image = None
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options as ChromeOpts
@@ -440,10 +445,13 @@ def _api_get(session, url, label="API"):
 
 
 def search_api(session, tag, order, page=1, mode="all"):
+    """搜索。使用 artworks 端点（与网页版一致）：只有这样才能搜到动图（illustType=2）；
+    旧的 illustrations + type=illust 会把动图全部过滤掉。漫画(illustType=1)由调用方跳过。
+    """
     enc = urllib.parse.quote(tag)
-    url = (f"https://www.pixiv.net/ajax/search/illustrations/{enc}"
+    url = (f"https://www.pixiv.net/ajax/search/artworks/{enc}"
            f"?word={enc}&order={order}&mode={mode}&p={page}"
-           f"&s_mode=s_tag&type=illust&lang=ja")
+           f"&s_mode=s_tag&lang=ja")
     resp = _api_get(session, url, "搜索")
     if resp.status_code != 200:
         return []
@@ -455,7 +463,6 @@ def search_api(session, tag, order, page=1, mode="all"):
         return []
     body = data.get("body", {})
     items = body.get("illustManga", {}).get("data") or \
-            body.get("illust", {}).get("data") or \
             body.get("data", [])
     if not isinstance(items, list):
         return []
@@ -464,7 +471,8 @@ def search_api(session, tag, order, page=1, mode="all"):
              "user_id": str(i.get("userId", "")),
              "user_name": i.get("userName", ""),
              "page_count": i.get("pageCount", 1),
-             "x_restrict": i.get("xRestrict") or 0}
+             "x_restrict": i.get("xRestrict") or 0,
+             "illust_type": i.get("illustType") or 0}
             for i in items]
 
 
@@ -472,6 +480,7 @@ def detail_api(session, illust_id):
     d = {"illust_id": illust_id, "title": "", "author": "", "author_id": "",
          "image_urls": [], "like_count": 0, "view_count": 0,
          "bookmark_count": 0, "tags": [], "page_count": 1,
+         "illust_type": 0,
          "is_r18": False, "url": f"https://www.pixiv.net/artworks/{illust_id}"}
 
     resp = _api_get(session,
@@ -494,6 +503,7 @@ def detail_api(session, illust_id):
     d["view_count"] = b.get("viewCount", 0)
     d["bookmark_count"] = b.get("bookmarkCount", 0)
     d["page_count"] = b.get("pageCount", 1)
+    d["illust_type"] = b.get("illustType") or 0   # 2 = 动图（ugoira）
     d["is_r18"] = b.get("xRestrict", 0) > 0
 
     # 标签
@@ -528,6 +538,118 @@ def detail_api(session, illust_id):
             pass
 
     return d
+
+
+def ugoira_meta_api(session, illust_id):
+    """动图元信息：帧序列 zip 地址 + 逐帧延迟。
+    zip 优先取 pixiv 播放版（600px，体积小、与网页播放一致）。
+    返回 {"zip_url": str, "frames": [{"file", "delay"}...]}，失败返回 None。
+    """
+    resp = _api_get(session,
+                    f"https://www.pixiv.net/ajax/illust/{illust_id}/ugoira_meta?lang=ja",
+                    "动图")
+    if resp.status_code != 200:
+        return None
+    try:
+        data = resp.json()
+    except Exception:
+        return None
+    if data.get("error") or not isinstance(data.get("body"), dict):
+        return None
+    b = data["body"]
+    zip_url = (b.get("src") or "").strip() or (b.get("originalSrc") or "").strip()
+    if not zip_url:
+        return None
+    frames = []
+    for f in (b.get("frames") or []):
+        if isinstance(f, dict) and f.get("file"):
+            try:
+                delay = int(f.get("delay") or 100)
+            except (TypeError, ValueError):
+                delay = 100
+            frames.append({"file": str(f["file"]), "delay": max(10, delay)})
+    return {"zip_url": zip_url, "frames": frames}
+
+
+def download_ugoira(d, folder, api_session):
+    """下载动图（ugoira）并合成为可播放的 GIF。
+
+    pixiv 的"原图"只是静态首帧（urls.original），真正的动画在 ugoira_meta 的
+    帧序列 zip 里；这里下载 zip 后用 Pillow 合成：逐帧延迟按 pixiv 元数据、
+    无限循环、长边封顶 600（与网页播放版一致）。成功返回 GIF 路径，失败返回 None。
+    """
+    lid = str(d["illust_id"])
+    if Image is None:
+        _log("  [动图] 未安装 Pillow，无法合成 GIF（pip install pillow）")
+        return None
+
+    meta = ugoira_meta_api(api_session, lid)
+    if not meta:
+        _log("  [动图] 元信息获取失败")
+        return None
+    frames_meta = meta["frames"]
+    _log(f"  [动图] 下载动图包（{len(frames_meta)} 帧）...")
+
+    tmp_path = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(suffix=".zip", prefix=f"pixdo_ugoira_{lid}_")
+        os.close(fd)
+        ok = False
+        with api_session.get(meta["zip_url"],
+                             headers={"Referer": d.get("url") or "https://www.pixiv.net/"},
+                             stream=True, timeout=60) as r:
+            if r.status_code == 200:
+                with open(tmp_path, "wb") as f:
+                    for chunk in r.iter_content(64 * 1024):
+                        if _should_stop():
+                            return None
+                        f.write(chunk)
+                ok = os.path.getsize(tmp_path) > 1000
+        if not ok:
+            _log("  [动图] 动图包下载失败")
+            return None
+
+        delay_map = {os.path.basename(f["file"]): f["delay"] for f in frames_meta}
+        fallback_delay = frames_meta[0]["delay"] if frames_meta else 100
+        resample = getattr(Image, "LANCZOS", None) or Image.Resampling.LANCZOS
+
+        images, durations = [], []
+        with zipfile.ZipFile(tmp_path) as z:
+            names = sorted(n for n in z.namelist()
+                           if not n.endswith("/") and
+                           n.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")))
+            for n in names:
+                if _should_stop():
+                    return None
+                im = Image.open(io.BytesIO(z.read(n))).convert("RGB")
+                if max(im.size) > 600:
+                    ratio = 600 / max(im.size)
+                    im = im.resize((max(1, int(im.width * ratio)),
+                                    max(1, int(im.height * ratio))), resample)
+                images.append(im)
+                durations.append(delay_map.get(os.path.basename(n), fallback_delay))
+        if not images:
+            _log("  [动图] 包里没有可用帧")
+            return None
+
+        likes = int(d.get("like_count") or 0)
+        fname = f"{likes:>08d}_{lid}_p0_{sanitize(d['author'])}.gif"
+        fpath = os.path.join(folder, fname)
+        images[0].save(fpath, save_all=True, append_images=images[1:],
+                       duration=durations, loop=0, disposal=2)
+        size_kb = os.path.getsize(fpath) // 1024
+        _log(f"  [动图] 合成完成：{len(images)} 帧"
+             f" {images[0].width}x{images[0].height} · {size_kb} KB")
+        return fpath
+    except Exception as e:
+        _log(f"  [动图] 合成失败: {e}")
+        return None
+    finally:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 # ============================================================
@@ -607,29 +729,114 @@ def _norm_candidate(c):
 
 
 def _search_tag_pool(pool, keyword, limit):
-    """离线回退：在历史标签池里做子串匹配（名称/翻译），前缀优先、热度次之"""
+    """离线回退：在历史标签池里做子串匹配（名称/翻译）。
+    简繁与异体字归一后匹配（如 圣娅→圣亚、园→園），前缀优先、热度次之。"""
     kw = keyword.lower()
+    if not kw:
+        return []
+    kwc = _tag_canon(kw)
     scored = []
     for it in (pool or {}).values():
         name = it.get("tag_name") or ""
         trans = it.get("translation") or ""
         nl, tl = name.lower(), trans.lower()
-        if kw and (kw in nl or kw in tl):
-            prefix = nl.startswith(kw) or tl.startswith(kw)
+        nlc = _tag_canon(nl)
+        tlc = _tag_canon(tl) if tl else ""
+        hit = (kw in nl) or (tl and kw in tl) or \
+              (kwc and (kwc in nlc or (tlc and kwc in tlc)))
+        if hit:
+            prefix = nl.startswith(kw) or (tl and tl.startswith(kw)) or \
+                     (kwc and (nlc.startswith(kwc) or (tlc and tlc.startswith(kwc))))
             scored.append((0 if prefix else 1,
                            -int(it.get("access_count") or 0), it))
     scored.sort(key=lambda x: (x[0], x[1]))
     return [it for _, _, it in scored[:limit]]
 
 
+# ---- 联想匹配辅助：简繁/异体字归一 + 逐级去尾（与安卓端 TagSuggester 同源）----
+
+# 简体 → 繁体/日文汉字（覆盖 ACG 标签常见字）
+_TAG_TRAD_PAIRS = (
+    "园園亚亞圣聖娅婭樱櫻猫貓爱愛优優龙龍东東学學见見绪緒织織团團结結线線纺紡岛島风風剑劍华華丽麗梦夢觉覺归歸来來乐樂术術书書谁誰语語话話认認让讓说說读讀词詞试試题題页頁贝貝车車马馬鸟鳥鱼魚龟龜齐齊仓倉们們个個为為无無义義实實参參双雙欢歡观觀劝勸对對时時树樹极極构構标標样樣机機权權边邊传傳价價众眾会會体體儿兒关關兴興军軍农農冲衝决決况況减減凤鳳划劃则則刚剛创創动動劳勞势勢区區医醫卫衛发發变變号號叶葉听聽吗嗎员員响響问問单單卖賣图圖场場块塊声聲处處备備复復头頭夺奪妈媽宝寶宫宮宾賓岁歲岗崗岭嶺币幣师師带帶帮幫广廣庆慶库庫应應废廢开開异異弃棄张張弥彌弹彈录錄彻徹径徑态態怀懷恶惡惊驚惯慣战戰户戶扑撲执執扩擴扫掃扬揚护護报報担擔拥擁择擇挂掛换換据據摆擺敌敵数數断斷旧舊显顯晓曉暂暫条條杨楊枪槍检檢楼樓欧歐残殘杀殺杂雜齿齒龄齡凯凱凛凜枫楓绫綾辉輝纱紗恋戀灯燈银銀凉涼莲蓮绘繪纯純绝絕绿綠红紅缘緣绀紺")
+_TAG_TRAD = {_TAG_TRAD_PAIRS[i]: _TAG_TRAD_PAIRS[i + 1]
+             for i in range(0, len(_TAG_TRAD_PAIRS) - 1, 2)}
+# 常见异体写法归一（如 圣娅 / 圣亚 两种粉丝常用译名）
+_TAG_VARIANT = {"娅": "亚"}
+
+
+def _tag_to_trad(s):
+    return "".join(_TAG_TRAD.get(c, c) for c in s)
+
+
+def _tag_canon(s):
+    """归一化：异体字统一 + 简繁统一 + 小写（仅用于比较，不用于展示）"""
+    s = s.lower()
+    return "".join(_TAG_TRAD.get(_TAG_VARIANT.get(c, c), _TAG_VARIANT.get(c, c))
+                   for c in s)
+
+
+def _tag_query_levels(keyword, max_levels=6):
+    """逐级去尾的查询变体（每层含 原文 + 繁体变体）：
+    百合园圣娅 → [[百合园圣娅, 百合園聖婭], [百合园圣, 百合園聖], [百合园, 百合園], ...]
+    """
+    out, cur, lv = [], keyword, 0
+    while len(cur) >= 2 and lv < max_levels:
+        out.append(list(dict.fromkeys([cur, _tag_to_trad(cur)])))
+        cur, lv = cur[:-1], lv + 1
+    return out
+
+
+def _tag_common_prefix(a, b):
+    i = 0
+    while i < len(a) and i < len(b) and a[i] == b[i]:
+        i += 1
+    return i
+
+
+def _tag_score(keyword, item):
+    """打分：与输入（归一化后）的公共前缀越长越相关；中文翻译命中同等计分"""
+    a = _tag_canon(keyword)
+    if not a:
+        return 0
+    best = _tag_common_prefix(a, _tag_canon(item.get("tag_name") or ""))
+    trans = item.get("translation") or ""
+    if trans:
+        best = max(best, _tag_common_prefix(a, _tag_canon(trans)))
+    return best
+
+
+def _fetch_suggest(keyword, timeout):
+    """单次在线联想查询（纯游客会话）"""
+    try:
+        q = urllib.parse.quote(keyword)
+        r = _get_suggest_session().get(f"{TAG_SUGGEST_URL}?keyword={q}&lang=zh",
+                                       timeout=timeout)
+        if r.status_code != 200:
+            return []
+        cands = r.json().get("candidates")
+        if not isinstance(cands, list):
+            return []
+        seen, out = set(), []
+        for c in cands:
+            if not isinstance(c, dict):
+                continue
+            it = _norm_candidate(c)
+            if it["tag_name"] and it["tag_name"] not in seen:
+                seen.add(it["tag_name"])
+                out.append(it)
+        return out
+    except Exception:
+        return []
+
+
 def suggest_tags(keyword, limit=10, timeout=6):
     """实时标签联想（搜索框下拉候选）。
 
-    数据源为 pixiv 官方联想接口 rpc/cps.php（游客可用，无需登录）：
-      输入中文「天童凯伊」→ 返回 tag_name=天童ケイ、tag_translation=天童凯伊
-    结果会写入本地缓存（tag_suggest_cache.json）：
-      - 相同关键词再次输入时即时返回
-      - 断网时退回历史标签池做子串匹配
+    pixiv 官方联想接口 rpc/cps.php 只做「前缀匹配」（对 tag 名或中文翻译），实测：
+      百合园 → 仅 1 条；百合園（繁体变体）→ 6 条；百合园圣 → 1 条；
+      圣娅 / 凯伊 / 未花 这类中间、尾部片段 → 0 条
+    因此查询时做「原文 + 简繁变体 + 逐级去尾」，返回后按与输入的公共前缀长度排序；
+    查过的结果写入本地池（tag_suggest_cache.json），之后中文片段也能离线命中。
 
     返回: [{"tag_name": str, "translation": str, "access_count": int, "type": str}, ...]
     """
@@ -643,39 +850,42 @@ def suggest_tags(keyword, limit=10, timeout=6):
     if cached:
         return cached[:limit]
 
-    results = None
-    try:
-        q = urllib.parse.quote(keyword)
-        r = _get_suggest_session().get(f"{TAG_SUGGEST_URL}?keyword={q}&lang=zh",
-                                       timeout=timeout)
-        if r.status_code == 200:
-            data = r.json()
-            cands = data.get("candidates")
-            if isinstance(cands, list):
-                seen = set()
-                results = []
-                for c in cands:
-                    if not isinstance(c, dict):
-                        continue
-                    it = _norm_candidate(c)
-                    if it["tag_name"] and it["tag_name"] not in seen:
-                        seen.add(it["tag_name"])
-                        results.append(it)
-    except Exception:
-        results = None
+    merged = {}      # tag_name -> item
+    for variants in _tag_query_levels(keyword):
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            results = list(ex.map(lambda v: _fetch_suggest(v, timeout), variants))
+        for lst in results:
+            for it in lst:
+                name = it["tag_name"]
+                old = merged.get(name)
+                if old is None:
+                    merged[name] = it
+                    continue
+                o_t = old.get("translation") or ""
+                n_t = it.get("translation") or ""
+                if (not o_t and n_t) or (bool(o_t) == bool(n_t) and
+                                         it["access_count"] > old["access_count"]):
+                    merged[name] = it
+        if len(merged) >= 6:
+            break
 
-    if results:
+    if merged:
+        ranked = sorted(merged.values(),
+                        key=lambda x: (-_tag_score(keyword, x),
+                                       -int(x.get("access_count") or 0)))[:limit]
         with _tag_cache_lock:
             cache = _load_tag_cache()
-            (cache.setdefault("queries", {}))[keyword] = results
+            (cache.setdefault("queries", {}))[keyword] = ranked
             pool = cache.setdefault("pool", {})
-            for it in results:
+            for it in ranked:
                 pool[it["tag_name"]] = it
             _save_tag_cache(cache)
-        return results[:limit]
+        return ranked
 
-    # 在线无结果 / 网络失败 → 用历史标签池子串匹配兜底
-    return _search_tag_pool(cache.get("pool"), keyword, limit)
+    # 在线无结果 / 网络失败 → 用历史标签池做（归一化）子串匹配兜底
+    with _tag_cache_lock:
+        pool = _load_tag_cache().get("pool")
+    return _search_tag_pool(pool, keyword, limit)
 
 
 # ============================================================
@@ -831,13 +1041,19 @@ class HistoryStore:
             pass
 
     # ---------------- 查询 ----------------
-    def should_skip(self, illust_id):
+    def should_skip(self, illust_id, is_ugoira=False):
         """是否需要跳过。返回 (skip, reason)"""
         rec = self.records.get(str(illust_id))
         if not rec:
             return False, ""
         st = rec.get("status")
         if st == "downloaded":
+            files = rec.get("file_list") or []
+            # 动图：旧记录里没有 .gif（过去只能下到静态首帧）→ 当作未完成重新下载
+            if is_ugoira and not any(str(f).lower().endswith(".gif") for f in files):
+                rec["status"] = "missing"
+                self._set_status(rec)
+                return False, ""
             if self.is_complete(rec):
                 return True, "已下载"
             # 文件已被删除 → 更新表, 当作未处理
@@ -1073,7 +1289,10 @@ def _main_impl():
                     if it["illust_id"] in seen:
                         continue
                     seen.add(it["illust_id"])
-                    if history and history.should_skip(it["illust_id"])[0]:
+                    if it.get("illust_type") == 1:
+                        continue                      # 漫画暂不下载
+                    if history and history.should_skip(
+                            it["illust_id"], it.get("illust_type") == 2)[0]:
                         dup += 1
                         skipped_dup += 1
                         continue
@@ -1212,30 +1431,40 @@ def _main_impl():
 
             ok_cnt = 0
             saved = []
-            for j, img_url in enumerate(urls):
-                if _should_stop():
-                    break
-                ext = os.path.splitext(img_url.split("?")[0])[1] or ".jpg"
-                if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
-                    ext = ".jpg"
-                fname = f"{likes:>08d}_{lid}_p{j}_{sanitize(author)}{ext}"
-                fpath = os.path.join(folder, fname)
-                if _file_ok(fpath):                      # 已存在 → 跳过下载
-                    ok_cnt += 1
-                    saved.append(fpath)
-                    continue
-                of = old_by_page.get(j)                  # 沿用旧文件名（若还在）
-                if of and _file_ok(of):
-                    ok_cnt += 1
-                    saved.append(of)
-                    continue
-                if download_image(img_url, fpath, ref, api):
-                    ok_cnt += 1
-                    saved.append(fpath)
-                time.sleep(CONFIG["download_delay"])
+            is_ugoira = d.get("illust_type") == 2
+            total_pages = 1 if is_ugoira else len(urls)
+
+            if is_ugoira:
+                # 动图：下载帧序列 zip → 合成为可播放的 GIF
+                gif_path = download_ugoira(d, folder, api)
+                if gif_path:
+                    ok_cnt = 1
+                    saved.append(gif_path)
+            else:
+                for j, img_url in enumerate(urls):
+                    if _should_stop():
+                        break
+                    ext = os.path.splitext(img_url.split("?")[0])[1] or ".jpg"
+                    if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
+                        ext = ".jpg"
+                    fname = f"{likes:>08d}_{lid}_p{j}_{sanitize(author)}{ext}"
+                    fpath = os.path.join(folder, fname)
+                    if _file_ok(fpath):                      # 已存在 → 跳过下载
+                        ok_cnt += 1
+                        saved.append(fpath)
+                        continue
+                    of = old_by_page.get(j)                  # 沿用旧文件名（若还在）
+                    if of and _file_ok(of):
+                        ok_cnt += 1
+                        saved.append(of)
+                        continue
+                    if download_image(img_url, fpath, ref, api):
+                        ok_cnt += 1
+                        saved.append(fpath)
+                    time.sleep(CONFIG["download_delay"])
 
             if history and ok_cnt:
-                history.record_downloaded(d, folder, saved, len(urls))
+                history.record_downloaded(d, folder, saved, total_pages)
 
             if ok_cnt:
                 dl += 1
@@ -1244,10 +1473,11 @@ def _main_impl():
                              "view_count": d.get("view_count", 0),
                              "bookmark_count": d.get("bookmark_count", 0),
                              "is_r18": is_r18, "tags": d["tags"], "url": ref,
-                             "ok": ok_cnt, "total": len(urls)})
+                             "ok": ok_cnt, "total": total_pages})
                 r18s = " [R18]" if is_r18 else " [safe]"
-                _log(f"  [{dl}/{CONFIG['max_images']}]{r18s} likes {likes:>6} "
-                     f"{title[:40]} | {ok_cnt}/{len(urls)}")
+                kind = " [动图]" if is_ugoira else ""
+                _log(f"  [{dl}/{CONFIG['max_images']}]{r18s}{kind} likes {likes:>6} "
+                     f"{title[:40]} | {ok_cnt}/{total_pages}")
 
             if dl >= CONFIG["max_images"]:
                 break

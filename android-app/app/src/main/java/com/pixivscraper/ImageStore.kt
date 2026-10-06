@@ -9,12 +9,12 @@ import androidx.annotation.RequiresApi
 import java.io.File
 
 /**
- * 图片保存到系统相册 Pictures/PixivScraper/<标签>/<safe|r18>/。
+ * 图片保存到系统相册 Pictures/PixivScraper/<标签>-safe | <标签>-r18/。
  * - Android 10+ : 通过 MediaStore 保存（不需要存储权限），查重索引从 MediaStore 批量查询
  * - Android 9-  : 直接写公共 Pictures 目录（需要 WRITE_EXTERNAL_STORAGE 权限）
  *
  * key = 记录在查重表里的文件标识：
- *   Android 10+ : "Pictures/PixivScraper/<标签>/<safe|r18>/<文件名>"
+ *   Android 10+ : "Pictures/PixivScraper/<标签>-safe|r18>/<文件名>"
  *   Android 9-  : 文件的绝对路径
  */
 class ImageStore(private val context: Context) {

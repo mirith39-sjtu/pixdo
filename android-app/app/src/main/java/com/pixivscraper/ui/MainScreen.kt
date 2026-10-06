@@ -60,6 +60,7 @@ import androidx.core.content.ContextCompat
 import com.pixivscraper.MainViewModel
 import com.pixivscraper.ScraperConfig
 import com.pixivscraper.TagSuggestion
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 
 // 每次 App 启动最多自动弹一次通知权限请求（防止在页面间切换时重复弹）
@@ -364,6 +365,8 @@ private fun ConfigCard(
         delay(300)                       // 输入防抖
         val result = try {
             fetchSuggestions(kw)
+        } catch (e: CancellationException) {
+            throw e                        // 用户继续打字：取消旧请求，不显示过期结果
         } catch (e: Exception) {
             emptyList()
         }

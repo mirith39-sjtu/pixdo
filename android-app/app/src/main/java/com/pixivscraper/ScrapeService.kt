@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
@@ -51,6 +52,7 @@ class ScrapeService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var monitorJob: Job? = null
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -75,6 +77,7 @@ class ScrapeService : Service() {
         } else {
             startForeground(NOTIF_ID, notification)
         }
+        acquireWakeLock()
         if (monitorJob == null) {
             monitorJob = scope.launch { monitor() }
         }
@@ -94,7 +97,33 @@ class ScrapeService : Service() {
         }
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         if (wasRunning) postDoneNotification()
+        releaseWakeLock()
         stopSelf()
+    }
+
+    /**
+     * 部分系统（尤其国产 ROM）在锁屏 / 后台会休眠进程的定时器与网络调度，
+     * 表现为「后台筛选卡住、但下载仍在跑」。持 PARTIAL_WAKE_LOCK 保证任务持续推进，
+     * 任务结束 / 服务销毁时释放。
+     */
+    private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "pixdo:run").apply {
+                setReferenceCounted(false)
+                acquire(4 * 60 * 60 * 1000L) // 4 小时上限，防止异常情况下泄漏
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            wakeLock?.let { if (it.isHeld) it.release() }
+        } catch (_: Exception) {
+        }
+        wakeLock = null
     }
 
     private fun notify(notification: Notification) {
@@ -210,13 +239,14 @@ class ScrapeService : Service() {
             builder.setContentText("正在下载  $done / $target")
             builder.setProgress(100, done * 100 / target, false)
         } else {
-            builder.setContentText("正在搜索与筛选作品…")
+            builder.setContentText(RunState.phase.ifEmpty { "正在搜索与筛选作品…" })
             builder.setProgress(0, 0, false)
         }
         return builder.build()
     }
 
     override fun onDestroy() {
+        releaseWakeLock()
         scope.cancel()
         super.onDestroy()
     }

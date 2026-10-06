@@ -8,6 +8,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.util.concurrent.TimeUnit
 
 /**
@@ -146,10 +147,16 @@ object PixivApi {
         }
     }
 
-    /** 按标签搜索。mode: all / safe / r18 */
+    /**
+     * 按标签搜索。mode: all / safe / r18
+     *
+     * 使用 /ajax/search/artworks（与网页版一致）：只有这样才包含动图（illustType=2）；
+     * 旧的 /ajax/search/illustrations + type=illust 会把动图全部过滤掉。
+     * 漫画（illustType=1）暂不下载。
+     */
     suspend fun search(tag: String, order: String, page: Int, mode: String): List<WorkBrief> {
         val encTag = enc(tag)
-        val url = "$BASE/ajax/search/illustrations/$encTag?word=$encTag&order=$order&mode=$mode&p=$page&s_mode=s_tag&type=illust&lang=ja"
+        val url = "$BASE/ajax/search/artworks/$encTag?word=$encTag&order=$order&mode=$mode&p=$page&s_mode=s_tag&lang=ja"
         val (code, text) = fetchWithRetry(url)
         if (code != 200 || text == null) return emptyList()
         return try {
@@ -157,7 +164,6 @@ object PixivApi {
             if (json.optBoolean("error")) return emptyList()
             val body = json.optJSONObject("body") ?: return emptyList()
             var arr: JSONArray? = body.optJSONObject("illustManga")?.optJSONArray("data")
-            if (arr == null || arr.length() == 0) arr = body.optJSONObject("illust")?.optJSONArray("data")
             if (arr == null || arr.length() == 0) arr = body.optJSONArray("data")
             if (arr == null) return emptyList()
             val out = ArrayList<WorkBrief>(arr.length())
@@ -165,6 +171,8 @@ object PixivApi {
                 val item = arr.optJSONObject(i) ?: continue
                 val id = item.optString("id")
                 if (id.isEmpty()) continue
+                val illustType = item.optInt("illustType", 0)
+                if (illustType == 1) continue   // 漫画暂不下载
                 out.add(
                     WorkBrief(
                         id = id,
@@ -172,6 +180,7 @@ object PixivApi {
                         userName = item.optString("userName"),
                         pageCount = item.optInt("pageCount", 1),
                         xRestrict = item.optInt("xRestrict"),
+                        illustType = illustType,
                     )
                 )
             }
@@ -243,6 +252,7 @@ object PixivApi {
             tags = parseTags(b.opt("tags")),
             imageUrls = urls,
             url = "$BASE/artworks/$id",
+            illustType = b.optInt("illustType"),
         )
     }
 
@@ -284,6 +294,46 @@ object PixivApi {
             }
         } catch (e: Exception) {
             null
+        }
+    }
+
+    /** 动图元信息（zip 地址 + 逐帧延迟）；zip 优先取 pixiv 播放版（600px） */
+    suspend fun ugoiraMeta(id: String): UgoiraMeta? {
+        val (code, text) = fetchWithRetry("$BASE/ajax/illust/$id/ugoira_meta?lang=ja")
+        if (code != 200 || text == null) return null
+        return try {
+            val json = JSONObject(text)
+            if (json.optBoolean("error")) return null
+            val b = json.optJSONObject("body") ?: return null
+            val zipUrl = b.optString("src").ifEmpty { b.optString("originalSrc") }
+            if (zipUrl.isEmpty()) return null
+            val frames = ArrayList<UgoiraFrame>()
+            val arr = b.optJSONArray("frames")
+            if (arr != null) {
+                for (i in 0 until arr.length()) {
+                    val f = arr.optJSONObject(i) ?: continue
+                    val name = f.optString("file")
+                    if (name.isEmpty()) continue
+                    frames.add(UgoiraFrame(name, f.optInt("delay", 100).coerceAtLeast(10)))
+                }
+            }
+            UgoiraMeta(zipUrl, frames)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** 流式下载到文件（动图 zip），成功返回 true */
+    suspend fun downloadToFile(url: String, target: File): Boolean = withContext(Dispatchers.IO) {
+        try {
+            client.newCall(Request.Builder().url(url).get().build()).execute().use { resp ->
+                if (resp.code != 200) return@withContext false
+                val body = resp.body ?: return@withContext false
+                target.outputStream().use { out -> body.byteStream().copyTo(out, 64 * 1024) }
+            }
+            true
+        } catch (e: Exception) {
+            false
         }
     }
 }

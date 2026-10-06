@@ -1,9 +1,14 @@
 package com.pixivscraper
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import java.io.BufferedInputStream
 import java.io.File
+import java.io.FileInputStream
+import java.util.zip.ZipInputStream
 import kotlin.math.max
 
 /**
@@ -30,6 +35,7 @@ class ScraperEngine(private val context: Context) {
         isStopped: () -> Boolean,
         onDownloadStart: (() -> Unit)? = null,
         onProgress: ((Int) -> Unit)? = null,
+        onPhase: ((String) -> Unit)? = null,
     ): RunResult {
         log("=".repeat(56))
         log("  pixdo · Android")
@@ -106,7 +112,7 @@ class ScraperEngine(private val context: Context) {
                         if (!seen.add(it.id)) continue
                         val rec = records[it.id]
                         if (config.dedup && rec != null &&
-                            shouldSkip(rec, index, db, config.dedupSkipFiltered)
+                            shouldSkip(rec, index, db, config.dedupSkipFiltered, it.illustType == 2)
                         ) {
                             dup++
                             skippedDup++
@@ -121,6 +127,7 @@ class ScraperEngine(private val context: Context) {
                     } else {
                         break // 整页都是本轮已见过的条目（翻页未生效），避免死循环
                     }
+                    onPhase?.invoke("正在搜索 · 第 $page 页 · 候选 ${candidates.size} 个")
                     page++
                     delay(apiDelayMs)
                 }
@@ -150,6 +157,7 @@ class ScraperEngine(private val context: Context) {
                 else -> "含R18"
             }
             log("[*] 获取详情 (≥${config.minLikes}赞, 过滤AI, $modeLabel)...")
+            onPhase?.invoke("正在筛选详情 0/${candidates.size}")
             val details = ArrayList<WorkDetail>()
             var lowCount = 0
             var aiCount = 0
@@ -200,6 +208,7 @@ class ScraperEngine(private val context: Context) {
                     }
                 }
                 log("  [${i + 1}/${candidates.size}] ${c.id}: ${d.title.take(30)} $label")
+                onPhase?.invoke("正在筛选详情 ${i + 1}/${candidates.size} · 已通过 ${details.size}")
                 delay(apiDelayMs)
                 if (lowCount >= 20 && details.size >= config.maxImages) {
                     log("  [*] 足够候选，停止详情获取")
@@ -238,7 +247,8 @@ class ScraperEngine(private val context: Context) {
                 if (d.isR18 && !config.includeR18) continue
                 if (!d.isR18 && config.r18Only) continue
 
-                val relFolder = "${sanitize(config.tag)}/${if (d.isR18) "r18" else "safe"}"
+                // 文件夹含标签名：<标签>-safe / <标签>-r18（相册里每个文件夹都能看出归属）
+                val relFolder = "${sanitize(config.tag)}-${if (d.isR18) "r18" else "safe"}"
 
                 // 旧文件索引：点赞数变化会导致文件名变化，按页号沿用旧文件
                 val oldByPage = HashMap<Int, String>()
@@ -249,33 +259,45 @@ class ScraperEngine(private val context: Context) {
 
                 var ok = 0
                 val saved = ArrayList<String>()
-                for ((j, imgUrl) in d.imageUrls.withIndex()) {
-                    if (isStopped()) break
-                    val ext = extOf(imgUrl)
-                    val likesStr = d.likeCount.toString().padStart(8, '0')
-                    val name = "${likesStr}_${d.id}_p${j}_${sanitize(d.author)}$ext"
-                    val curKey = store.keyFor(relFolder, name)
-                    if (curKey in index) {
-                        ok++
-                        saved.add(curKey)
-                        continue
+                val totalPages = if (d.isUgoira) 1 else d.imageUrls.size
+
+                if (d.isUgoira) {
+                    // 动图：先下载帧序列 zip，再合成为可播放的 GIF
+                    val key = convertUgoira(d, relFolder, store, log, isStopped, onPhase)
+                    if (key != null) {
+                        ok = 1
+                        saved.add(key)
+                        index.add(key)
                     }
-                    val oldKey = oldByPage[j]
-                    if (oldKey != null && oldKey in index) {
-                        ok++
-                        saved.add(oldKey)
-                        continue
-                    }
-                    val bytes = PixivApi.downloadImage(imgUrl)
-                    if (bytes != null) {
-                        val key = store.save(relFolder, name, mimeOf(ext), bytes)
-                        if (key != null) {
+                } else {
+                    for ((j, imgUrl) in d.imageUrls.withIndex()) {
+                        if (isStopped()) break
+                        val ext = extOf(imgUrl)
+                        val likesStr = d.likeCount.toString().padStart(8, '0')
+                        val name = "${likesStr}_${d.id}_p${j}_${sanitize(d.author)}$ext"
+                        val curKey = store.keyFor(relFolder, name)
+                        if (curKey in index) {
                             ok++
-                            saved.add(key)
-                            index.add(key)
+                            saved.add(curKey)
+                            continue
                         }
+                        val oldKey = oldByPage[j]
+                        if (oldKey != null && oldKey in index) {
+                            ok++
+                            saved.add(oldKey)
+                            continue
+                        }
+                        val bytes = PixivApi.downloadImage(imgUrl)
+                        if (bytes != null) {
+                            val key = store.save(relFolder, name, mimeOf(ext), bytes)
+                            if (key != null) {
+                                ok++
+                                saved.add(key)
+                                index.add(key)
+                            }
+                        }
+                        delay(downloadDelayMs)
                     }
-                    delay(downloadDelayMs)
                 }
 
                 if (config.dedup && ok > 0) {
@@ -286,8 +308,9 @@ class ScraperEngine(private val context: Context) {
                     dl++
                     onProgress?.invoke(dl)
                     val tagStr = if (d.isR18) " [R18]" else " [safe]"
-                    log("  [$dl/${config.maxImages}]$tagStr likes ${d.likeCount} ${d.title.take(40)} | $ok/${d.imageUrls.size}")
-                    meta.add(DownloadMeta(d.id, d.title, d.author, d.likeCount, ok, d.imageUrls.size))
+                    val kindStr = if (d.isUgoira) " [动图]" else ""
+                    log("  [$dl/${config.maxImages}]$tagStr$kindStr likes ${d.likeCount} ${d.title.take(40)} | $ok/$totalPages")
+                    meta.add(DownloadMeta(d.id, d.title, d.author, d.likeCount, ok, totalPages))
                 }
                 if (dl >= config.maxImages) break
             }
@@ -296,7 +319,7 @@ class ScraperEngine(private val context: Context) {
             log("=".repeat(56))
             log("  完成！下载 $dl 个新作品")
             if (skippedDup > 0) log("  查重跳过 $skippedDup 个已处理过的作品")
-            log("  保存位置：相册 Pictures/PixivScraper/${sanitize(config.tag)}/")
+            log("  保存位置：相册 Pictures/PixivScraper/${sanitize(config.tag)}-safe（或 -r18）")
             log("=".repeat(56))
             if (meta.isNotEmpty()) {
                 log("  Top 10:")
@@ -341,9 +364,15 @@ class ScraperEngine(private val context: Context) {
         index: Set<String>,
         db: HistoryDb?,
         skipFiltered: Boolean,
+        isUgoira: Boolean = false,
     ): Boolean = when (rec.status) {
         "downloaded" -> {
-            if (isComplete(rec, index)) {
+            // 动图：旧版本可能只存了静态首帧（非 .gif），视为未完成 → 重新下载
+            if (isUgoira && rec.files.none { it.endsWith(".gif", ignoreCase = true) }) {
+                rec.status = "missing"
+                safeCall { db?.setStatus(rec.id, "missing") }
+                false
+            } else if (isComplete(rec, index)) {
                 true
             } else {
                 // 文件已被删除 → 更新表, 当作未处理
@@ -354,6 +383,118 @@ class ScraperEngine(private val context: Context) {
         }
         "filtered" -> skipFiltered
         else -> false
+    }
+
+    // ---------------- 动图（ugoira）合成 ----------------
+
+    /**
+     * 下载动图并合成为 GIF：
+     * 1. ugoira_meta 取帧序列 zip（优先 pixiv 播放版 600px）
+     * 2. 流式下载到缓存目录（不整包驻留内存）
+     * 3. 逐帧解码（长边封顶 600）→ GifEncoder 合成（延迟按 pixiv 元数据）
+     * 成功返回保存后的查重 key；失败返回 null
+     */
+    private suspend fun convertUgoira(
+        d: WorkDetail,
+        relFolder: String,
+        store: ImageStore,
+        log: (String) -> Unit,
+        isStopped: () -> Boolean,
+        onPhase: ((String) -> Unit)?,
+    ): String? {
+        val meta = PixivApi.ugoiraMeta(d.id)
+        if (meta == null) {
+            log("  [动图] 元信息获取失败，跳过")
+            return null
+        }
+        val tmp = File(context.cacheDir, "ugoira_${d.id}.zip")
+        log("  [动图] 下载动图包（${meta.frames.size} 帧）...")
+        if (!PixivApi.downloadToFile(meta.zipUrl, tmp) || tmp.length() < 1000L) {
+            log("  [动图] 动图包下载失败")
+            tmp.delete()
+            return null
+        }
+        try {
+            val entries = ArrayList<Pair<String, ByteArray>>()
+            ZipInputStream(BufferedInputStream(FileInputStream(tmp))).use { zin ->
+                var e = zin.nextEntry
+                while (e != null) {
+                    if (!e.isDirectory && !e.name.endsWith(".json")) {
+                        entries.add(e.name.substringAfterLast('/') to zin.readBytes())
+                    }
+                    e = zin.nextEntry
+                }
+            }
+            entries.sortBy { it.first }
+            if (entries.isEmpty()) {
+                log("  [动图] 包里没有可用帧")
+                return null
+            }
+            val delayByFile = HashMap<String, Int>()
+            meta.frames.forEach { delayByFile[it.file.substringAfterLast('/')] = it.delayMs }
+            val fallbackDelay = meta.frames.firstOrNull()?.delayMs ?: 100
+
+            var enc: GifEncoder? = null
+            var encW = 0
+            var encH = 0
+            var count = 0
+            for ((idx, entry) in entries.withIndex()) {
+                if (isStopped()) return null
+                val bytes = entry.second
+                val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: continue
+                val scaled = scaleForGif(bmp)
+                if (enc == null) {
+                    encW = scaled.width
+                    encH = scaled.height
+                    enc = GifEncoder(encW, encH)
+                }
+                val px = IntArray(encW * encH)
+                if (scaled.width == encW && scaled.height == encH) {
+                    scaled.getPixels(px, 0, encW, 0, 0, encW, encH)
+                } else {
+                    val again = Bitmap.createScaledBitmap(scaled, encW, encH, true)
+                    again.getPixels(px, 0, encW, 0, 0, encW, encH)
+                    if (again !== scaled) again.recycle()
+                }
+                enc.addFrame(px, delayByFile[entry.first] ?: fallbackDelay)
+                if (scaled !== bmp) scaled.recycle()
+                bmp.recycle()
+                count++
+                onPhase?.invoke("正在合成动图 ${idx + 1}/${entries.size}")
+            }
+            val encoder = enc
+            if (encoder == null || count == 0) {
+                log("  [动图] 没有可用帧")
+                return null
+            }
+            val gif = encoder.finish()
+            val likesStr = d.likeCount.toString().padStart(8, '0')
+            val fileName = "${likesStr}_${d.id}_p0_${sanitize(d.author)}.gif"
+            val key = store.save(relFolder, fileName, "image/gif", gif)
+            if (key == null) {
+                log("  [动图] 保存到相册失败")
+                return null
+            }
+            log("  [动图] 合成完成：$count 帧 ${encW}x$encH · ${gif.size / 1024} KB")
+            return key
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log("  [动图] 合成失败: ${e.message}")
+            return null
+        } finally {
+            tmp.delete()
+        }
+    }
+
+    /** 动图帧长边封顶 600（pixiv 播放版分辨率），控制 GIF 体积 */
+    private fun scaleForGif(bmp: Bitmap): Bitmap {
+        val maxSide = max(bmp.width, bmp.height)
+        if (maxSide <= 600) return bmp
+        val ratio = 600f / maxSide
+        val w = max(1, (bmp.width * ratio).toInt())
+        val h = max(1, (bmp.height * ratio).toInt())
+        return Bitmap.createScaledBitmap(bmp, w, h, true)
     }
 
     private fun isComplete(rec: HistoryDb.WorkRecord, index: Set<String>): Boolean {

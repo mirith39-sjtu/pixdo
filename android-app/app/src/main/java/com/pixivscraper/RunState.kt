@@ -27,6 +27,9 @@ object RunState {
     /** 结束原因：null = 正常完成；非空 = 出错信息（用户手动停止看 stopFlag） */
     @Volatile var endReason: String? = null
 
+    /** 当前阶段文案（搜索 / 筛选详情进度），前台服务直接显示 */
+    @Volatile var phase: String = ""
+
     /** 状态版本号：变化则通知刷新 */
     @Volatile var version = 0
 
@@ -39,6 +42,7 @@ object RunState {
         endDownloaded = 0
         endSkipped = 0
         endReason = null
+        phase = ""
         bump()
     }
 
@@ -50,6 +54,14 @@ object RunState {
     fun progress(done: Int) {
         downloaded = done
         bump()
+    }
+
+    /** 更新阶段文案；变化才 bump（避免无意义刷新通知） */
+    fun updatePhase(text: String) {
+        if (phase != text) {
+            phase = text
+            bump()
+        }
     }
 
     fun finish() {
