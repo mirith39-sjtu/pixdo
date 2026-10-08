@@ -176,7 +176,8 @@ fun SettingsScreen(vm: MainViewModel, onOpenLogin: () -> Unit) {
         SettingCard(
             title = "删除偏好学习（beta）",
             desc = "根据你删掉部分图片的行为，自动统计不喜欢的标签，并在排序时降低它们的权重" +
-                "（只影响顺序，不会直接排除）。数据来自本机查重记录。",
+                "（只影响顺序，不会直接排除）。偏好按搜索标签分别学习；" +
+                "与该标签高度伴随的基础特征（例如角色本身就是贫乳）不会被计入。",
             control = {
                 Switch(checked = config.learnPrefer, onCheckedChange = { v ->
                     vm.updateConfig { c -> c.copy(learnPrefer = v) }

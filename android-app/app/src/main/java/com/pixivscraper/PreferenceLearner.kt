@@ -5,10 +5,18 @@ package com.pixivscraper
  * 从「已精选(pruned，用户删掉了一部分)」的查重记录中统计功能性标签，
  * 计算每个标签的删除比例；下载排序时按比例降低其权重（不会直接排除）。
  *
+ * 两个防误判措施：
+ *  1) 按搜索标签分上下文：同一个标签在不同搜索标签下含义可能相反（搜索贫乳角色时删掉「巨乳」版本，
+ *     搜索巨乳角色时删掉「贫乳」版本）——各学各的，互不干扰。
+ *  2) 排除基础标签：与搜索标签高度伴随的标签（如贫乳角色下的「贫乳」）视为该标签的基础特征，不参与学习。
+ *
  * 只统计 [FUNC_TAGS] 里的功能/内容标签 —— 角色名、作品名、系列名等身份标签
  * 不在词库中，因此不会参与学习。词库可按需增删。
  */
 object PreferenceLearner {
+
+    /** 与搜索标签高度伴随的判定阈值：出现比例 ≥ 该值 → 视为「基础标签」，不参与学习 */
+    const val ASSOC_RATIO = 0.6
 
     /** 功能性标签词库：分类名 -> 标签列表（pixiv 常用日文为主，附常见英文/中文写法） */
     val FUNC_TAGS: Map<String, List<String>> = linkedMapOf(
@@ -73,24 +81,50 @@ object PreferenceLearner {
         val pruned: Boolean,
         val pageCount: Int = 1,
         val remainFiles: Int = 0,
+        /** 该作品是在哪个搜索标签下处理的（偏好按搜索标签分上下文学习） */
+        val sourceTag: String = "",
     )
 
     /** 标签的「被下载 / 被用户删除」计数（删除按页数比例计权） */
     class Counts(var seen: Int = 0, var pruned: Double = 0.0)
 
-    /** 统计功能性标签；[WorkTags.pruned] 为 true（已精选）的记录贡献删除权重 */
-    fun buildStats(works: List<WorkTags>): Map<String, Counts> {
+    /**
+     * 某个搜索标签下的统计结果。
+     * [baseline] = 与该搜索标签高度伴随的标签（如贫乳角色下的「贫乳」），不参与学习。
+     */
+    data class ContextStats(
+        val counts: Map<String, Counts>,
+        val baseline: Set<String>,
+        val total: Int,
+    )
+
+    /**
+     * 按搜索标签统计：只统计 [WorkTags.sourceTag] 等于 [contextTag] 的记录。
+     * [contextTag] 为空时统计全部（旧版行为）。
+     */
+    fun buildContextStats(
+        works: List<WorkTags>,
+        contextTag: String,
+        assocRatio: Double = ASSOC_RATIO,
+    ): ContextStats {
         val stats = LinkedHashMap<String, Counts>()
+        val tagWorks = LinkedHashMap<String, Int>()
+        var total = 0
         for (w in works) {
+            if (contextTag.isNotEmpty() && w.sourceTag != contextTag) continue
+            total++
             val keys = LinkedHashSet<String>()
             for (t in w.tags) {
                 lookup[t.trim().lowercase()]?.let { keys.add(it) }
             }
+            for (k in keys) {                     // 伴随比例：只要出现过就算
+                tagWorks[k] = (tagWorks[k] ?: 0) + 1
+            }
             if (keys.isEmpty()) continue
             var weight = 0.0
             if (w.pruned) {
-                val total = if (w.pageCount > 0) w.pageCount else 1
-                weight = ((total - w.remainFiles).toDouble() / total).coerceIn(0.0, 1.0)
+                val totalPages = if (w.pageCount > 0) w.pageCount else 1
+                weight = ((totalPages - w.remainFiles).toDouble() / totalPages).coerceIn(0.0, 1.0)
                 if (weight <= 0.0) weight = 1.0   // 兜底：状态为已精选但页数信息缺失
             }
             for (k in keys) {
@@ -99,13 +133,24 @@ object PreferenceLearner {
                 c.pruned += weight
             }
         }
-        return stats
+        val baseline = LinkedHashSet<String>()
+        if (total > 0) {
+            for ((tag, n) in tagWorks) {
+                if (n.toDouble() / total >= assocRatio) baseline.add(tag)
+            }
+        }
+        return ContextStats(stats, baseline, total)
     }
 
-    /** 标签的删除比例（0-1）；样本不足或从未被删的标签不参与 */
-    fun penalties(stats: Map<String, Counts>, minSeen: Int): Map<String, Double> {
+    /** 标签的删除比例（0-1）；样本不足、从未被删、或属于基础标签的不参与 */
+    fun penalties(
+        stats: Map<String, Counts>,
+        minSeen: Int,
+        baseline: Set<String> = emptySet(),
+    ): Map<String, Double> {
         val out = LinkedHashMap<String, Double>()
         for ((tag, c) in stats) {
+            if (tag in baseline) continue          // 与搜索标签高度伴随 → 视为基础标签
             if (c.pruned <= 0.0 || c.seen < maxOf(1, minSeen)) continue
             out[tag] = minOf(1.0, c.pruned / c.seen)
         }

@@ -66,6 +66,7 @@ CONFIG = {
     "learn_prefer": True,              # True = 根据「已精选」(用户删过) 统计功能性标签偏好
     "prefer_strength": 50,             # 权重削减强度（0-100；越大影响越明显）
     "prefer_min_seen": 3,              # 标签至少被下载过 N 次才参与统计
+    "prefer_assoc_ratio": 0.6,         # 与搜索标签高度伴随（出现比例≥该值）的标签视为「基础标签」不参与学习
 }
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -187,45 +188,76 @@ for _cat, _tags in FUNC_TAGS:
         _FUNC_LOOKUP[_t.strip().lower()] = _t
 
 
-def learn_tag_stats(records):
-    """统计功能性标签的「被下载 / 被用户删除」情况。
+def learn_context_stats(records, context_tag=None, assoc_ratio=0.6):
+    """按「搜索标签」统计：功能性标签的下载/删除计数 + 与搜索标签高度伴随的标签。
 
-    records: 查重记录（含 status / tags / page_count / file_list）。
-    - status == filtered 的不算（那是程序过滤，不是用户行为）
-    - 删除比例按「删掉页数 / 总页数」计权（删得越多，信号越强）
-    返回 {tag: [下载数, 删除权重]}。
+    为什么要分上下文：
+      · 同一个标签在不同搜索标签下的含义可能相反（搜索贫乳角色时删掉「巨乳」版本，
+        搜索巨乳角色时删掉「贫乳」版本）——共用一份衰减表会互相干扰。
+      · 如果某个标签几乎出现在该搜索标签下的所有作品里（如贫乳角色下的「贫乳」），
+        它其实是这个标签下的「基础/身份特征」，删除行为不应归因于它。
+
+    参数:
+      records: 查重记录（含 source_tag / status / tags / page_count / file_list）。
+      context_tag: 只统计 source_tag 等于它的记录；空值 = 统计全部（旧版兼容）。
+      assoc_ratio: 出现比例 ≥ 该值 → 视为基础标签，不参与学习。
+
+    返回 (stats, baseline, total)：
+      stats    = {功能标签: [下载数, 删除权重]}（filtered 记录不计入删除权重）
+      baseline = 与该搜索标签高度伴随的功能标签集合
+      total    = 该上下文下的作品总数（用于伴随比例）
     """
     stats = {}
+    tag_works = {}
+    total = 0
     for rec in records:
-        if rec.get("status") == "filtered":
+        src = rec.get("source_tag") or ""
+        if context_tag and src != context_tag:
             continue
+        total += 1
         try:
             tags = json.loads(rec.get("tags") or "[]")
         except Exception:
             continue
         if not isinstance(tags, list):
             continue
-        keys = {_FUNC_LOOKUP[_norm_tag(x)] for x in tags if _norm_tag(x) in _FUNC_LOOKUP}
-        if not keys:
+        norm = {_norm_tag(x) for x in tags}
+        keys = {_FUNC_LOOKUP[n] for n in norm if n in _FUNC_LOOKUP}
+        for k in keys:                              # 伴随比例：只要出现过就算
+            tag_works[k] = tag_works.get(k, 0) + 1
+        if rec.get("status") == "filtered" or not keys:
             continue
         weight = 0.0
         if rec.get("status") == "pruned":
-            total = int(rec.get("page_count") or 1)
+            pages = int(rec.get("page_count") or 1)
             left = len(rec.get("file_list") or [])
-            weight = max(0.0, min(1.0, (total - left) / total)) if total else 0.0
+            weight = max(0.0, min(1.0, (pages - left) / pages)) if pages else 0.0
             if weight <= 0:
                 weight = 1.0            # 兜底：状态为 pruned 但页数信息缺失
         for k in keys:
             ent = stats.setdefault(k, [0, 0.0])
             ent[0] += 1
             ent[1] += weight
+    baseline = set()
+    if total > 0:
+        for t, n in tag_works.items():
+            if n / total >= assoc_ratio:
+                baseline.add(t)
+    return stats, baseline, total
+
+
+def learn_tag_stats(records, context_tag=None):
+    """兼容入口：只返回功能性标签计数（不分上下文时 context_tag 留空）"""
+    stats, _baseline, _total = learn_context_stats(records, context_tag)
     return stats
 
 
-def learn_tag_penalties(stats, min_seen):
-    """标签的删除比例（0-1）；样本不足或从未被删的标签不参与"""
+def learn_tag_penalties(stats, min_seen, exclude=None):
+    """标签的删除比例（0-1）；样本不足、从未被删、或属于基础标签的不参与"""
     out = {}
     for tag, (seen, pruned) in stats.items():
+        if exclude and tag in exclude:      # 与搜索标签高度伴随 → 视为基础标签
+            continue
         if pruned <= 0 or seen < max(1, int(min_seen or 1)):
             continue
         out[tag] = min(1.0, pruned / seen)
@@ -1068,7 +1100,8 @@ def download_image(url, path, referer, api_session):
 # ============================================================
 
 _HIST_COLS = ("illust_id title author author_id like_count is_r18 page_count "
-              "tags url status reason folder files created_at updated_at").split()
+              "tags url status reason folder files created_at updated_at "
+              "source_tag").split()
 
 
 def _file_ok(path):
@@ -1102,19 +1135,21 @@ class HistoryStore:
 
     _UPSERT = """INSERT INTO works
         (illust_id,title,author,author_id,like_count,is_r18,page_count,
-         tags,url,status,reason,folder,files,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         tags,url,status,reason,folder,files,created_at,updated_at,source_tag)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(illust_id) DO UPDATE SET
             title=excluded.title, author=excluded.author,
             author_id=excluded.author_id, like_count=excluded.like_count,
             is_r18=excluded.is_r18, page_count=excluded.page_count,
             tags=excluded.tags, url=excluded.url, status=excluded.status,
             reason=excluded.reason, folder=excluded.folder,
-            files=excluded.files, updated_at=excluded.updated_at"""
+            files=excluded.files, updated_at=excluded.updated_at,
+            source_tag=excluded.source_tag"""
 
-    def __init__(self, db_path, skip_filtered=True):
+    def __init__(self, db_path, skip_filtered=True, source_tag=""):
         self.db_path = db_path
         self.skip_filtered = skip_filtered
+        self.source_tag = source_tag       # 该作品是在哪个搜索标签下被处理的（偏好学习分上下文用）
         self.conn = None
         self.records = {}
 
@@ -1135,8 +1170,13 @@ class HistoryStore:
             reason     TEXT,
             folder     TEXT,
             files      TEXT,
+            source_tag TEXT,
             created_at TEXT,
             updated_at TEXT)""")
+        # 旧库迁移：补充 source_tag 列（缺失时旧记录的该列为空，不参与偏好学习）
+        cols = {row[1] for row in self.conn.execute("PRAGMA table_info(works)")}
+        if "source_tag" not in cols:
+            self.conn.execute("ALTER TABLE works ADD COLUMN source_tag TEXT DEFAULT ''")
         self.conn.commit()
         self.records = {}
         for row in self.conn.execute(f"SELECT {','.join(_HIST_COLS)} FROM works"):
@@ -1272,9 +1312,14 @@ class HistoryStore:
             1 if rec.get("is_r18") else 0, rec.get("page_count", 1),
             rec.get("tags", "[]"), rec.get("url", ""), rec.get("status", ""),
             rec.get("reason", ""), rec.get("folder", ""), rec.get("files", "[]"),
-            rec.get("created_at", _now()), rec.get("updated_at", _now())))
+            rec.get("created_at", _now()), rec.get("updated_at", _now()),
+            rec.get("source_tag", "")))
         self.conn.commit()
         self.records[str(rec["illust_id"])] = rec
+
+    def _source_tag_of(self, d=None):
+        """当前作品所属的搜索标签（显式指定优先，否则用本次运行的标签）"""
+        return self.source_tag or (d or {}).get("source_tag") or CONFIG.get("tag", "")
 
     def record_downloaded(self, d, folder, files, expected):
         """记录已处理的作品。files: 实际存在的文件列表; expected: 应有页数"""
@@ -1299,6 +1344,7 @@ class HistoryStore:
             "files": json.dumps(present, ensure_ascii=False),
             "created_at": old.get("created_at") or now,
             "updated_at": now,
+            "source_tag": self._source_tag_of(d),
         }
         rec["file_list"] = present
         self._upsert(rec)
@@ -1324,6 +1370,7 @@ class HistoryStore:
             "files": old.get("files") or "[]",
             "created_at": old.get("created_at") or now,
             "updated_at": now,
+            "source_tag": old.get("source_tag") or self._source_tag_of(d),
         }
         rec["file_list"] = old.get("file_list") or []
         self._upsert(rec)
@@ -1507,19 +1554,29 @@ def _main_impl():
             history = None
 
     # ---- 删除偏好学习（beta）：从「已精选」记录统计功能性标签，后续降低其排序权重 ----
+    #   按搜索标签分上下文统计，并排除与该标签「高度伴随」的基础标签（如贫乳角色下的「贫乳」）
     tag_penalties_map = {}
     if history is not None and CONFIG.get("learn_prefer", True):
         try:
-            tstats = learn_tag_stats(history.records.values())
+            ctx_tag = CONFIG.get("tag", "")
+            tstats, baseline, ctx_total = learn_context_stats(
+                history.records.values(), ctx_tag,
+                float(CONFIG.get("prefer_assoc_ratio", 0.6) or 0.6))
             tag_penalties_map = learn_tag_penalties(
-                tstats, int(CONFIG.get("prefer_min_seen", 3) or 3))
+                tstats, int(CONFIG.get("prefer_min_seen", 3) or 3), baseline)
             if tag_penalties_map:
                 top = sorted(tag_penalties_map.items(), key=lambda kv: -kv[1])[:6]
                 desc = "、".join(f"{t} -{int(r * 100)}%" for t, r in top)
-                _log(f"[*] 偏好学习: 统计 {len(tstats)} 个功能性标签，"
+                _log(f"[*] 偏好学习: 「{ctx_tag}」（{ctx_total} 条记录）统计 {len(tstats)} 个功能性标签，"
                      f"降低 {len(tag_penalties_map)} 个标签的权重（{desc}）")
+                if baseline:
+                    names = "、".join(sorted(baseline)[:6])
+                    more = "…" if len(baseline) > 6 else ""
+                    _log(f"    其中 {len(baseline)} 个标签与该标签高度伴随（视为基础标签，未参与）: {names}{more}")
+            elif ctx_total == 0:
+                _log(f"[*] 偏好学习: 「{ctx_tag}」还没有历史记录（偏好按搜索标签分别学习）")
             else:
-                _log("[*] 偏好学习: 暂无足够删除样本（删掉部分图片后会自动学习）")
+                _log(f"[*] 偏好学习: 「{ctx_tag}」暂无足够删除样本（删掉部分图片后会自动学习）")
         except Exception as e:
             _log(f"[!] 偏好学习失败（本次不启用）: {e}")
             tag_penalties_map = {}

@@ -22,8 +22,8 @@ private fun nowStamp(): String =
  *     整个作品全删 = missing（下次重新下载）；
  *     只删了一部分 = pruned（视为有意筛选，不再补下）
  */
-class HistoryDb(context: Context) :
-    SQLiteOpenHelper(context.applicationContext, DB_NAME, null, 1) {
+class HistoryDb(context: Context, private val sourceTag: String = "") :
+    SQLiteOpenHelper(context.applicationContext, DB_NAME, null, 2) {
 
     data class WorkRecord(
         val id: String,
@@ -40,6 +40,8 @@ class HistoryDb(context: Context) :
         var tags: List<String>,
         var createdAt: String,
         var updatedAt: String,
+        /** 该作品是在哪个搜索标签下被处理的（偏好学习分上下文用） */
+        var sourceTag: String = "",
     )
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -58,13 +60,17 @@ class HistoryDb(context: Context) :
                 reason     TEXT,
                 folder     TEXT,
                 files      TEXT,
+                source_tag TEXT,
                 created_at TEXT,
                 updated_at TEXT)"""
         )
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // 版本 1：暂无升级逻辑
+        // 版本 2：works 表新增 source_tag 列（旧记录该列为空，不参与偏好学习）
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE works ADD COLUMN source_tag TEXT DEFAULT ''")
+        }
     }
 
     fun loadAll(): Map<String, WorkRecord> {
@@ -113,11 +119,16 @@ class HistoryDb(context: Context) :
             put("reason", "")
             put("folder", folder)
             put("files", JSONArray(files).toString())
+            put("source_tag", sourceFor(existing))
             put("created_at", existing?.createdAt ?: nowStamp())
             put("updated_at", nowStamp())
         }
         writableDatabase.insertWithOnConflict("works", null, v, SQLiteDatabase.CONFLICT_REPLACE)
     }
+
+    /** 本次运行的搜索标签优先；为空时保留旧值（旧记录可能没有） */
+    private fun sourceFor(existing: WorkRecord?): String =
+        if (sourceTag.isNotEmpty()) sourceTag else (existing?.sourceTag ?: "")
 
     fun upsertFiltered(d: WorkDetail, reason: String) {
         val existing = getRecord(d.id)
@@ -132,6 +143,7 @@ class HistoryDb(context: Context) :
             put("url", d.url)
             put("status", "filtered")
             put("reason", reason)
+            put("source_tag", sourceFor(existing))
             put("updated_at", nowStamp())
         }
         if (existing == null) {
@@ -168,6 +180,7 @@ class HistoryDb(context: Context) :
         tags = parseStringList(c.getString(13)),
         createdAt = c.getString(11) ?: "",
         updatedAt = c.getString(12) ?: "",
+        sourceTag = c.getString(14) ?: "",
     )
 
     private fun parseStringList(raw: String?): List<String> {
@@ -185,7 +198,7 @@ class HistoryDb(context: Context) :
     companion object {
         private const val SELECT_ALL =
             "SELECT illust_id,title,author,author_id,like_count,is_r18,page_count," +
-                "status,reason,folder,files,created_at,updated_at,tags FROM works"
+                "status,reason,folder,files,created_at,updated_at,tags,source_tag FROM works"
 
         /** 清空查重记录（删除数据库文件） */
         fun clear(context: Context): String {

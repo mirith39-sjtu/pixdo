@@ -77,7 +77,7 @@ class ScraperEngine(private val context: Context) {
             // ---- 查重库：加载 + 与磁盘对账（手动删除的图片在这里被检测到） ----
             if (config.dedup) {
                 try {
-                    val d = HistoryDb(context)
+                    val d = HistoryDb(context, config.tag)
                     db = d
                     records = HashMap(d.loadAll())
                     index = HashSet(store.buildIndex())
@@ -98,22 +98,34 @@ class ScraperEngine(private val context: Context) {
             }
 
             // ---- 删除偏好学习（beta）：从「已精选」记录统计功能性标签，后续降低其排序权重 ----
+            //   按搜索标签分上下文，并排除与该标签「高度伴随」的基础标签（如贫乳角色下的「贫乳」）
             var tagPenalties: Map<String, Double> = emptyMap()
             if (config.learnPrefer && db != null) {
                 try {
                     val works = records.values.map {
                         PreferenceLearner.WorkTags(
                             it.tags, it.status == "pruned", it.pageCount, it.files.size,
+                            sourceTag = it.sourceTag,
                         )
                     }
-                    val stats = PreferenceLearner.buildStats(works)
-                    tagPenalties = PreferenceLearner.penalties(stats, PREFER_MIN_SEEN)
-                    if (tagPenalties.isNotEmpty()) {
-                        val desc = tagPenalties.entries.sortedByDescending { it.value }.take(6)
-                            .joinToString("、") { "${it.key} -${(it.value * 100).toInt()}%" }
-                        log("[*] 偏好学习: 统计 ${stats.size} 个功能性标签，降低 ${tagPenalties.size} 个标签的权重（$desc）")
-                    } else {
-                        log("[*] 偏好学习: 暂无足够删除样本（删掉部分图片后会自动学习）")
+                    val ctx = PreferenceLearner.buildContextStats(works, config.tag)
+                    tagPenalties = PreferenceLearner.penalties(ctx.counts, PREFER_MIN_SEEN, ctx.baseline)
+                    when {
+                        tagPenalties.isNotEmpty() -> {
+                            val desc = tagPenalties.entries.sortedByDescending { it.value }.take(6)
+                                .joinToString("、") { "${it.key} -${(it.value * 100).toInt()}%" }
+                            log(
+                                "[*] 偏好学习: 「${config.tag}」（${ctx.total} 条记录）统计 ${ctx.counts.size} " +
+                                    "个功能性标签，降低 ${tagPenalties.size} 个标签的权重（$desc）"
+                            )
+                            if (ctx.baseline.isNotEmpty()) {
+                                log("    其中 ${ctx.baseline.size} 个标签与该标签高度伴随（视为基础标签，未参与）")
+                            }
+                        }
+                        ctx.total == 0 ->
+                            log("[*] 偏好学习: 「${config.tag}」还没有历史记录（偏好按搜索标签分别学习）")
+                        else ->
+                            log("[*] 偏好学习: 「${config.tag}」暂无足够删除样本（删掉部分图片后会自动学习）")
                     }
                 } catch (e: Exception) {
                     log("[!] 偏好学习失败（本次不启用）: ${e.message}")
