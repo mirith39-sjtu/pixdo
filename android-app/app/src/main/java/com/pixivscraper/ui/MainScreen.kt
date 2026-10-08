@@ -27,33 +27,31 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -62,9 +60,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.PopupProperties
 import androidx.core.content.ContextCompat
 import com.pixivscraper.MainViewModel
-import com.pixivscraper.NicheFetishes
 import com.pixivscraper.RunState
-import com.pixivscraper.ScraperConfig
 import com.pixivscraper.TagSuggestion
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -74,23 +70,32 @@ private object NotifPermAutoGate {
     @Volatile var asked = false
 }
 
+/**
+ * 主操作页：只保留常用项（标签 / 数量 / 点赞 / 排序 / R18 / 开始停止），
+ * 其余设置见「设置」页，运行日志见独立页面（顶部按钮进入）。
+ */
 @Composable
-fun MainScreen(
+fun ScrapeScreen(
     vm: MainViewModel,
-    onOpenLogin: () -> Unit,
-    onOpenHelp: () -> Unit,
+    onOpenLog: () -> Unit,
+    onGoSettings: () -> Unit,
 ) {
     val context = LocalContext.current
-    val logs by vm.logs.collectAsState()
     val config = vm.config
-    val listState = rememberLazyListState()
 
-    var showClearDialog by remember { mutableStateOf(false) }
+    var showLoginNeeded by remember { mutableStateOf(false) }
     var tagText by remember { mutableStateOf(config.tag) }
     var maxText by remember { mutableStateOf(config.maxImages.toString()) }
     var minText by remember { mutableStateOf(config.minLikes.toString()) }
 
-    // Android 13+ 通知权限：用于前台服务的进度通知（拒绝也能运行，只是看不到通知）
+    // ---- Android 13+ 通知权限（前台服务进度通知；拒绝也能跑，只是看不到通知）----
+    val notifyPermissionNeeded: () -> Boolean = {
+        Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) != PackageManager.PERMISSION_GRANTED
+    }
     val notifyPermDeniedToast: () -> Unit = {
         Toast.makeText(
             context,
@@ -98,60 +103,33 @@ fun MainScreen(
             Toast.LENGTH_LONG,
         ).show()
     }
-
-    // 点「开始爬取」时申请权限：无论允许与否都会开始任务
     val notifPermLauncherRun = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (!granted) notifyPermDeniedToast()
         vm.start()
     }
-
-    // 打开「运行通知」开关时申请权限：只申请，不启动任务
-    val notifPermLauncherSwitch = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (!granted) notifyPermDeniedToast()
-    }
-
-    val notifPermNeeded: () -> Boolean = {
-        Build.VERSION.SDK_INT >= 33 &&
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.POST_NOTIFICATIONS,
-            ) != PackageManager.PERMISSION_GRANTED
-    }
-
-    // 一进入应用就自动申请通知权限（仅 Android 13+ 且尚未授权时）
     val notifPermLauncherAuto = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { _ ->
-        // 静默处理：拒绝后的引导由「运行通知」开关 / 开始爬取处的提示负责，
-        // 避免每次打开 App 都弹 Toast 打扰用户
+        // 静默处理：拒绝后的引导由「设置 → 运行通知」与开始时的提示负责
     }
-
     LaunchedEffect(Unit) {
-        if (!NotifPermAutoGate.asked && notifPermNeeded()) {
+        if (!NotifPermAutoGate.asked && notifyPermissionNeeded()) {
             NotifPermAutoGate.asked = true
             notifPermLauncherAuto.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 
-    val promptNotifPerm: () -> Unit = {
-        if (notifPermNeeded()) {
-            notifPermLauncherSwitch.launch(Manifest.permission.POST_NOTIFICATIONS)
-        }
-    }
-
     val beginRun: () -> Unit = {
-        if (vm.config.notifyRun && notifPermNeeded()) {
+        if (vm.config.notifyRun && notifyPermissionNeeded()) {
             notifPermLauncherRun.launch(Manifest.permission.POST_NOTIFICATIONS)
         } else {
             vm.start()
         }
     }
 
-    val permLauncher = rememberLauncherForActivityResult(
+    val storagePermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
@@ -164,173 +142,179 @@ fun MainScreen(
     val tryStart: () -> Unit = {
         if (vm.config.tag.isBlank()) {
             Toast.makeText(context, "请先填写搜索标签", Toast.LENGTH_SHORT).show()
+        } else if (vm.loginState != 1) {
+            // 登录状态检测已移至「设置」页：这里提醒并引导过去
+            vm.refreshLogin()
+            showLoginNeeded = true
         } else if (Build.VERSION.SDK_INT < 29 &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE)
             != PackageManager.PERMISSION_GRANTED
         ) {
-            permLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            storagePermLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         } else {
             beginRun()
         }
     }
 
-    // 自动跟随日志：仅当用户本来就贴在底部时才滚动；往上翻阅历史时不再强制拉回
-    val isAtBottom by remember {
-        derivedStateOf {
-            val info = listState.layoutInfo
-            val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: -1
-            info.totalItemsCount == 0 || lastVisible >= info.totalItemsCount - 2
-        }
-    }
-    LaunchedEffect(logs.size) {
-        if (logs.isNotEmpty() && isAtBottom && !listState.isScrollInProgress) {
-            val target = (logs.size + 3).coerceAtMost(listState.layoutInfo.totalItemsCount - 1)
-            if (target >= 0) listState.animateScrollToItem(target)
-        }
-    }
-
-    Column(Modifier.fillMaxSize()) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(text = "pixdo", style = MaterialTheme.typography.titleLarge)
-            Spacer(Modifier.weight(1f))
-            TextButton(onClick = onOpenHelp) { Text("说明") }
-        }
-
-        LazyColumn(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth(),
-            state = listState,
-            contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            // 0: 登录状态
-            item {
-                Card(Modifier.fillMaxWidth()) {
-                    Row(
-                        Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        val (txt, color) = when (vm.loginState) {
-                            1 -> "登录状态：已登录 ✓" to MaterialTheme.colorScheme.primary
-                            2 -> "登录状态：未登录" to MaterialTheme.colorScheme.error
-                            else -> "登录状态：检测中…" to MaterialTheme.colorScheme.onSurfaceVariant
-                        }
-                        Text(
-                            text = txt,
-                            color = color,
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                        Spacer(Modifier.weight(1f))
-                        TextButton(onClick = onOpenLogin) { Text("登录") }
-                        TextButton(onClick = { vm.refreshLogin() }) { Text("检测") }
-                    }
-                }
-            }
-
-            // 1: 配置
-            item {
-                ConfigCard(
-                    config = config,
-                    onChange = { transform -> vm.updateConfig(transform) },
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        // 1: 搜索条件
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(12.dp)) {
+                TagInputField(
                     tagText = tagText,
                     onTagText = { t ->
                         tagText = t
                         vm.updateConfig { c -> c.copy(tag = t) }
                     },
                     fetchSuggestions = { kw -> vm.fetchTagSuggestions(kw) },
-                    onEnableNotify = promptNotifPerm,
-                    maxText = maxText,
-                    onMaxText = { raw ->
-                        val t = raw.filter { it.isDigit() }.take(5)
-                        maxText = t
-                        t.toIntOrNull()?.let { v ->
-                            vm.updateConfig { c -> c.copy(maxImages = v.coerceAtLeast(1)) }
-                        }
-                    },
-                    minText = minText,
-                    onMinText = { raw ->
-                        val t = raw.filter { it.isDigit() }.take(6)
-                        minText = t
-                        t.toIntOrNull()?.let { v ->
-                            vm.updateConfig { c -> c.copy(minLikes = v) }
-                        }
-                    },
-                    onClearHistory = { showClearDialog = true },
                 )
-            }
 
-            // 2: 按钮与状态
-            item {
-                Column {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Button(
-                            onClick = tryStart,
-                            enabled = !vm.running,
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Text("开始爬取")
-                        }
-                        Spacer(Modifier.width(8.dp))
-                        OutlinedButton(
-                            onClick = { vm.stop() },
-                            enabled = vm.running,
-                            modifier = Modifier.weight(1f),
-                        ) {
-                            Text("停止")
-                        }
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    text = "排序",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                ) {
+                    val orders = listOf(
+                        "popular_d" to "综合热门",
+                        "date_d" to "最新",
+                        "popular_male_d" to "男性向",
+                        "popular_female_d" to "女性向",
+                    )
+                    orders.forEach { (value, label) ->
+                        FilterChip(
+                            selected = config.order == value,
+                            onClick = { vm.updateConfig { c -> c.copy(order = value) } },
+                            label = { Text(label) },
+                            modifier = Modifier.padding(end = 6.dp),
+                        )
                     }
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = vm.statusText,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                }
+
+                Spacer(Modifier.height(6.dp))
+                Row(Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = maxText,
+                        onValueChange = { raw ->
+                            val t = raw.filter { it.isDigit() }.take(5)
+                            maxText = t
+                            t.toIntOrNull()?.let { v ->
+                                vm.updateConfig { c -> c.copy(maxImages = v.coerceAtLeast(1)) }
+                            }
+                        },
+                        label = { Text("下载数量") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedTextField(
+                        value = minText,
+                        onValueChange = { raw ->
+                            val t = raw.filter { it.isDigit() }.take(6)
+                            minText = t
+                            t.toIntOrNull()?.let { v ->
+                                vm.updateConfig { c -> c.copy(minLikes = v) }
+                            }
+                        },
+                        label = { Text("最低点赞") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.weight(1f),
                     )
                 }
             }
+        }
 
-            // 3: 日志标题
-            item {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(text = "运行日志", style = MaterialTheme.typography.titleSmall)
-                    Spacer(Modifier.weight(1f))
-                    TextButton(onClick = { vm.clearLogs() }) { Text("清空日志") }
+        // 2: R18（仅 R18 开关只在「包含 R18」开启时出现）
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
+                SwitchRow("包含 R18 作品", config.includeR18) { v ->
+                    vm.updateConfig { c ->
+                        c.copy(includeR18 = v, r18Only = if (v) c.r18Only else false)
+                    }
+                }
+                if (config.includeR18) {
+                    SwitchRow("仅 R18（不下载普通作品）", config.r18Only) { v ->
+                        vm.updateConfig { c -> c.copy(r18Only = v) }
+                    }
                 }
             }
+        }
 
-            // 4+: 日志内容
-            items(logs) { line ->
+        // 3: 开始 / 停止
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(12.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Button(
+                        onClick = tryStart,
+                        enabled = !vm.running,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("开始爬取")
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    OutlinedButton(
+                        onClick = { vm.stop() },
+                        enabled = vm.running,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("停止")
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
                 Text(
-                    text = line,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 12.sp,
-                    lineHeight = 16.sp,
+                    text = vm.statusText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
+
+        // 4: 运行日志入口
+        OutlinedButton(onClick = onOpenLog, modifier = Modifier.fillMaxWidth()) {
+            Text("运行日志")
+        }
     }
 
-    if (showClearDialog) {
+    // 未登录提醒：引导到「设置」页完成登录
+    if (showLoginNeeded) {
+        val stillChecking = vm.loginState != 2
         AlertDialog(
-            onDismissRequest = { showClearDialog = false },
-            title = { Text("清空查重记录") },
-            text = { Text("清空后所有作品都会被当作新作品重新处理。确定要清空吗？") },
+            onDismissRequest = { showLoginNeeded = false },
+            title = { Text("需要先登录") },
+            text = {
+                Text(
+                    if (stillChecking) {
+                        "正在检测登录状态。\n\n" +
+                            "如果还没有登录，请先到「设置」页完成登录" +
+                            "（下载 R18 作品必须登录，登录信息只保存在本机）。"
+                    } else {
+                        "还没有检测到已登录的 pixiv 账号。\n\n" +
+                            "请先在「设置」页完成登录（下载 R18 作品必须登录），" +
+                            "登录信息只保存在本机。"
+                    }
+                )
+            },
             confirmButton = {
                 TextButton(onClick = {
-                    showClearDialog = false
-                    val msg = vm.clearHistory()
-                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                }) {
-                    Text("清空")
-                }
+                    showLoginNeeded = false
+                    onGoSettings()
+                }) { Text("前往设置") }
             },
             dismissButton = {
-                TextButton(onClick = { showClearDialog = false }) { Text("取消") }
+                TextButton(onClick = { showLoginNeeded = false }) { Text("取消") }
             },
         )
     }
@@ -365,24 +349,80 @@ fun MainScreen(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+/** 运行日志（独立页面，从主操作页进入） */
 @Composable
-private fun ConfigCard(
-    config: ScraperConfig,
-    onChange: ((ScraperConfig) -> ScraperConfig) -> Unit,
+fun LogScreen(vm: MainViewModel, onBack: () -> Unit) {
+    val logs by vm.logs.collectAsState()
+    val listState = rememberLazyListState()
+    val clipboard = LocalClipboardManager.current
+
+    // 自动跟随日志：仅当用户本来就贴在底部时才滚动
+    val isAtBottom by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+            info.totalItemsCount == 0 || lastVisible >= info.totalItemsCount - 2
+        }
+    }
+    LaunchedEffect(logs.size) {
+        if (logs.isNotEmpty() && isAtBottom && !listState.isScrollInProgress) {
+            val target = (logs.size - 1).coerceAtLeast(0)
+            listState.animateScrollToItem(target)
+        }
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 4.dp, end = 8.dp, top = 8.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(onClick = onBack) { Text("返回") }
+            Text(text = "运行日志", style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = {
+                clipboard.setText(AnnotatedString(logs.joinToString("\n")))
+            }) { Text("复制") }
+            TextButton(onClick = { vm.clearLogs() }) { Text("清空") }
+        }
+
+        if (logs.isEmpty()) {
+            Text(
+                text = "暂无日志。回到「爬取」页开始任务后，这里会显示运行过程。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(16.dp),
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                state = listState,
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+            ) {
+                items(logs) { line ->
+                    Text(
+                        text = line,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** 标签输入框 + 联想下拉（选完后不再自动弹出，点击输入框才恢复） */
+@Composable
+fun TagInputField(
     tagText: String,
     onTagText: (String) -> Unit,
     fetchSuggestions: suspend (String) -> List<TagSuggestion>,
-    onEnableNotify: () -> Unit,
-    maxText: String,
-    onMaxText: (String) -> Unit,
-    minText: String,
-    onMinText: (String) -> Unit,
-    onClearHistory: () -> Unit,
 ) {
-    // ---- 标签实时联想（pixiv 官方接口；选完候选后不再自动弹出，点击输入框才恢复）----
     var suggestEnabled by remember { mutableStateOf(false) }
-    var showNicheDialog by remember { mutableStateOf(false) }
     var queryTick by remember { mutableStateOf(0) }
     var suggestions by remember { mutableStateOf<List<TagSuggestion>>(emptyList()) }
     var expanded by remember { mutableStateOf(false) }
@@ -412,235 +452,62 @@ private fun ConfigCard(
         }
     }
 
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp)) {
-            Box(Modifier.fillMaxWidth()) {
-                OutlinedTextField(
-                    value = tagText,
-                    onValueChange = { t ->
-                        onTagText(t)
-                        suggestEnabled = true   // 继续打字也恢复联想
-                    },
-                    label = { Text("搜索标签") },
-                    singleLine = true,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .pointerInput(Unit) {
-                            awaitPointerEventScope {
-                                while (true) {
-                                    val event = awaitPointerEvent(PointerEventPass.Initial)
-                                    if (event.type == PointerEventType.Press) {
-                                        suggestEnabled = true   // 点击输入框 → 允许联想
-                                        queryTick++
-                                    }
-                                }
+    Box(Modifier.fillMaxWidth()) {
+        OutlinedTextField(
+            value = tagText,
+            onValueChange = { t ->
+                onTagText(t)
+                suggestEnabled = true   // 继续打字也恢复联想
+            },
+            label = { Text("搜索标签") },
+            singleLine = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            if (event.type == PointerEventType.Press) {
+                                suggestEnabled = true   // 点击输入框 → 允许联想
+                                queryTick++
                             }
-                        },
-                )
-                DropdownMenu(
-                    expanded = expanded,
-                    onDismissRequest = { expanded = false },
-                    // 关键：不抢焦点。默认的弹出菜单会夺走输入框焦点，
-                    // 导致每输入一个字输入法就被收起（无法连续打字）
-                    properties = PopupProperties(focusable = false),
-                ) {
-                    suggestions.forEach { s ->
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    text = if (s.translation.isNotEmpty() && s.translation != s.tagName) {
-                                        "${s.tagName}    （${s.translation}）"
-                                    } else {
-                                        s.tagName
-                                    },
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            },
-                            onClick = {
-                                onTagText(s.tagName)     // 选中后填入日文 tag
-                                suggestEnabled = false   // 选完收起；再次点击输入框才恢复
-                                expanded = false
-                            },
-                        )
+                        }
                     }
-                }
-            }
-
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = "排序",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-            ) {
-                val orders = listOf(
-                    "popular_d" to "综合热门",
-                    "date_d" to "最新",
-                    "popular_male_d" to "男性向",
-                    "popular_female_d" to "女性向",
-                )
-                orders.forEach { (value, label) ->
-                    FilterChip(
-                        selected = config.order == value,
-                        onClick = { onChange { c -> c.copy(order = value) } },
-                        label = { Text(label) },
-                        modifier = Modifier.padding(end = 6.dp),
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(4.dp))
-            Row(Modifier.fillMaxWidth()) {
-                OutlinedTextField(
-                    value = maxText,
-                    onValueChange = onMaxText,
-                    label = { Text("下载数量") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.weight(1f),
-                )
-                Spacer(Modifier.width(8.dp))
-                OutlinedTextField(
-                    value = minText,
-                    onValueChange = onMinText,
-                    label = { Text("最低点赞") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.weight(1f),
-                )
-            }
-
-            Spacer(Modifier.height(4.dp))
-            SwitchRow("过滤 AI 生成", config.filterAi) { v ->
-                onChange { c -> c.copy(filterAi = v) }
-            }
-            SwitchRow("包含 R18 作品", config.includeR18) { v ->
-                onChange { c -> c.copy(includeR18 = v) }
-            }
-            SwitchRow("仅 R18 模式", config.r18Only) { v ->
-                onChange { c -> c.copy(r18Only = v) }
-            }
-            SwitchRow("查重（跳过已处理 ID）", config.dedup) { v ->
-                onChange { c -> c.copy(dedup = v) }
-            }
-            SwitchRow("跳过已过滤作品（低赞/AI）", config.dedupSkipFiltered) { v ->
-                onChange { c -> c.copy(dedupSkipFiltered = v) }
-            }
-            SwitchRow("过滤小众性癖（R18）", config.filterNicheR18) { v ->
-                onChange { c -> c.copy(filterNicheR18 = v) }
-            }
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = if (config.allowedNiche.isEmpty()) {
-                        "允许的性癖：全部过滤"
-                    } else {
-                        "允许的性癖（${config.allowedNiche.size}）：" +
-                            config.allowedNiche.joinToString("、") { NicheFetishes.labelOf(it) }
+                },
+        )
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            // 不抢焦点：默认弹出菜单会夺走输入框焦点，导致输入法收起
+            properties = PopupProperties(focusable = false),
+        ) {
+            suggestions.forEach { s ->
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = if (s.translation.isNotEmpty() && s.translation != s.tagName) {
+                                "${s.tagName}    （${s.translation}）"
+                            } else {
+                                s.tagName
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                     },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f),
-                )
-                TextButton(onClick = { showNicheDialog = true }) { Text("选择…") }
-            }
-            SwitchRow("删除偏好学习（beta）", config.learnPrefer) { v ->
-                onChange { c -> c.copy(learnPrefer = v) }
-            }
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = "偏好削减强度 ${config.preferStrength}%",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.width(150.dp),
-                )
-                Slider(
-                    value = config.preferStrength.toFloat(),
-                    onValueChange = { v -> onChange { c -> c.copy(preferStrength = v.toInt()) } },
-                    valueRange = 0f..100f,
-                    steps = 9,
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            SwitchRow("运行通知（后台 / 锁屏下载）", config.notifyRun) { v ->
-                onChange { c -> c.copy(notifyRun = v) }
-                if (v) onEnableNotify()
-            }
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onClearHistory) { Text("清空查重记录") }
-                Text(
-                    text = "全删自动补下；只删一部分视为有意保留",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    onClick = {
+                        onTagText(s.tagName)     // 选中后填入日文 tag
+                        suggestEnabled = false   // 选完收起；再次点击输入框才恢复
+                        expanded = false
+                    },
                 )
             }
         }
     }
-
-    // 小众性癖（R18）：勾选允许的类别，其余过滤
-    if (showNicheDialog) {
-        val selected = remember { mutableStateListOf<String>().apply { addAll(config.allowedNiche) } }
-        AlertDialog(
-            onDismissRequest = { showNicheDialog = false },
-            title = { Text("允许下载的性癖（R18）") },
-            text = {
-                Column(Modifier.verticalScroll(rememberScrollState())) {
-                    Text(
-                        "勾选 = 允许；未勾选的类别会被过滤（全部不勾 = 过滤所有小众性癖）",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Row {
-                        TextButton(onClick = { selected.clear() }) { Text("全不选") }
-                        TextButton(onClick = {
-                            selected.clear()
-                            NicheFetishes.CATEGORIES.forEach { selected.add(it.first) }
-                        }) { Text("全选") }
-                    }
-                    NicheFetishes.CATEGORIES.forEach { (key, label, tags) ->
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(
-                                checked = key in selected,
-                                onCheckedChange = { v ->
-                                    if (v) {
-                                        if (key !in selected) selected.add(key)
-                                    } else {
-                                        selected.remove(key)
-                                    }
-                                },
-                            )
-                            Column {
-                                Text(label, style = MaterialTheme.typography.bodyMedium)
-                                Text(
-                                    tags.take(4).joinToString("、"),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    onChange { c -> c.copy(allowedNiche = selected.toList()) }
-                    showNicheDialog = false
-                }) { Text("确定") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showNicheDialog = false }) { Text("取消") }
-            },
-        )
-    }
 }
 
+/** 一行「文字 + 开关」 */
 @Composable
-private fun SwitchRow(label: String, checked: Boolean, onChecked: (Boolean) -> Unit) {
+fun SwitchRow(label: String, checked: Boolean, onChecked: (Boolean) -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(
             text = label,

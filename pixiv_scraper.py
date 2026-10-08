@@ -548,6 +548,32 @@ def ensure_logged_in(driver):
     manual_login(driver)
 
 
+def check_login_from_cookies():
+    """仅用本地 cookies.pkl 检查登录状态（不启动浏览器）。
+
+    返回 (state, msg): state = True(已登录) / False(未登录或已失效) / None(无法判断)
+    """
+    cf = CONFIG["cookie_file"]
+    if not os.path.exists(cf):
+        return None, "未找到登录信息（首次使用需登录一次）"
+    try:
+        with open(cf, "rb") as f:
+            cookies = pickle.load(f)
+    except Exception as e:
+        return None, f"登录信息读取失败（{e}）"
+    if not isinstance(cookies, list) or not cookies:
+        return None, "登录信息为空（首次使用需登录一次）"
+    try:
+        state = _session_logged_in(_make_session(cookies))
+    except Exception as e:
+        return None, f"无法判断登录状态（{e}）"
+    if state is True:
+        return True, "已登录"
+    if state is False:
+        return False, "未登录或登录已失效（下次运行会重新打开浏览器登录）"
+    return None, "无法判断登录状态（检查代理 / 网络后重试）"
+
+
 # ============================================================
 # API 层（requests）
 # ============================================================
