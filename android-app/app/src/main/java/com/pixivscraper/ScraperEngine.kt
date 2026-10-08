@@ -24,6 +24,10 @@ class ScraperEngine(private val context: Context) {
         /** 偏好学习：标签至少被下载过 N 次才参与统计 */
         private const val PREFER_MIN_SEEN = 3
 
+        /** 整组删除的语义判定：一次对账里「全删」占比 ≥90%（且至少 3 条）→ 更像批量清理 */
+        private const val WHOLESALE_MIN = 3
+        private const val WHOLESALE_RATIO_PCT = 90
+
         /** 询问等待上限；超时按「继续查找」处理 */
         private const val ASK_TIMEOUT_MS = 120_000L
     }
@@ -84,11 +88,21 @@ class ScraperEngine(private val context: Context) {
                     val downloaded = records.values.count { it.status == "downloaded" }
                     val missing = records.values.count { it.status == "missing" }
                     val pruned = records.values.count { it.status == "pruned" }
+                    val removed = records.values.count { it.status == "removed" }
                     val filtered = records.values.count { it.status == "filtered" }
-                    log("[*] 查重库: 共 ${records.size} 条（已下载 $downloaded / 文件缺失 $missing / 已精选 $pruned / 已过滤 $filtered）")
-                    val rc = reconcile(records, index, d)
-                    if (rc.toMissing > 0) log("[*] 查重: ${rc.toMissing} 条记录被整体删除 → 下次将重新下载")
+                    log(
+                        "[*] 查重库: 共 ${records.size} 条（已下载 $downloaded / 文件缺失 $missing / " +
+                            "已精选 $pruned / 已移除 $removed / 已过滤 $filtered）"
+                    )
+                    val rc = reconcile(records, index, d, config.redownloadDeleted)
+                    if (rc.toMissing > 0) log("[*] 查重: ${rc.toMissing} 条记录被整体删除 → 视为清理，下次将重新下载")
                     if (rc.toPruned > 0) log("[*] 查重: ${rc.toPruned} 条记录只删了一部分 → 视为有意保留，不再补下")
+                    if (rc.toRemoved > 0) {
+                        log(
+                            "[*] 查重: ${rc.toRemoved} 条作品被整组删除 → 视为不喜欢，不再补下" +
+                                "（计入偏好学习；可在设置里开启「整组删除后重新下载」）"
+                        )
+                    }
                     if (rc.toDone > 0) log("[*] 查重: ${rc.toDone} 条记录的文件已恢复（状态更新为已下载）")
                 } catch (e: Exception) {
                     log("[!] 查重库打开失败（本次不做去重）: ${e.message}")
@@ -106,6 +120,7 @@ class ScraperEngine(private val context: Context) {
                         PreferenceLearner.WorkTags(
                             it.tags, it.status == "pruned", it.pageCount, it.files.size,
                             sourceTag = it.sourceTag,
+                            removed = it.status == "removed",
                         )
                     }
                     val ctx = PreferenceLearner.buildContextStats(works, config.tag)
@@ -502,11 +517,18 @@ class ScraperEngine(private val context: Context) {
 
     // ---------------- 查重逻辑（与桌面版一致） ----------------
 
-    private data class ReconcileResult(val toMissing: Int, val toPruned: Int, val toDone: Int)
+    private data class ReconcileResult(
+        val toMissing: Int,
+        val toPruned: Int,
+        val toDone: Int,
+        val toRemoved: Int,
+    )
 
     /**
      * 对账：同步被手动删除/恢复的文件状态。
-     * - 整个作品全删 → missing（下次重新下载）
+     * - 整个作品全删 → removed（视为主观不喜欢：不再补下，并计入偏好学习）
+     *   例外：一次对账里绝大多数记录都被全删（更像批量清理）→ missing（重新下载）
+     *   ；config.redownloadDeleted = true 时总是按清理处理
      * - 只删了一部分 → pruned（视为有意保留，不再补下）
      * - 文件恢复齐全 → downloaded
      */
@@ -514,13 +536,45 @@ class ScraperEngine(private val context: Context) {
         records: Map<String, HistoryDb.WorkRecord>,
         index: Set<String>,
         db: HistoryDb,
+        redownloadDeleted: Boolean,
     ): ReconcileResult {
+        var checked = 0
+        var fullyDeleted = 0
+        for (rec in records.values) {
+            if (rec.status != "downloaded" && rec.status != "missing" && rec.status != "pruned") continue
+            if (rec.files.isEmpty()) continue
+            checked++
+            if (rec.files.none { it in index }) fullyDeleted++
+        }
+        // 整组删除占比 ≥90%（且至少 3 条）→ 更像批量清理
+        val threshold = maxOf(WHOLESALE_MIN, (checked * WHOLESALE_RATIO_PCT + 99) / 100)
+        val wholesale = checked > 0 && fullyDeleted >= threshold
+
         var toMissing = 0
         var toPruned = 0
         var toDone = 0
+        var toRemoved = 0
         for (rec in records.values) {
-            if (rec.status != "downloaded" && rec.status != "missing" && rec.status != "pruned") continue
-            val newStatus = evalStatus(rec, index)
+            if (rec.status != "downloaded" && rec.status != "missing" &&
+                rec.status != "pruned" && rec.status != "removed"
+            ) {
+                continue
+            }
+            if (rec.status == "removed") {
+                // 已判定为主观删除：仅在按清理处理（开关 / 整批清理）时恢复为待下载
+                if (redownloadDeleted || wholesale) {
+                    rec.status = "missing"
+                    safeCall { db.setStatus(rec.id, "missing") }
+                    toMissing++
+                }
+                continue
+            }
+            var newStatus = evalStatus(rec, index)
+            if (newStatus == "missing" && (rec.status == "downloaded" || rec.status == "pruned") &&
+                !wholesale && !redownloadDeleted
+            ) {
+                newStatus = "removed"              // 主观删除：不再补下
+            }
             if (newStatus == rec.status) continue
             rec.status = newStatus
             if (newStatus == "pruned") {
@@ -531,10 +585,11 @@ class ScraperEngine(private val context: Context) {
             when (newStatus) {
                 "missing" -> toMissing++
                 "pruned" -> toPruned++
+                "removed" -> toRemoved++
                 else -> toDone++
             }
         }
-        return ReconcileResult(toMissing, toPruned, toDone)
+        return ReconcileResult(toMissing, toPruned, toDone, toRemoved)
     }
 
     /** 删除行为判断：全删 → missing；部分删 → pruned；齐全 → downloaded */
@@ -574,7 +629,8 @@ class ScraperEngine(private val context: Context) {
                 false
             }
         }
-        "pruned" -> true // 用户主动删了一部分（视为有意筛选）→ 不再补下；全删时对账会变回 missing
+        "pruned" -> true // 用户主动删了一部分（视为有意筛选）→ 不再补下
+        "removed" -> true // 整组删除（视为主观不喜欢）→ 不再补下；可在设置里改为重新下载
         "filtered" -> skipFiltered
         else -> false
     }

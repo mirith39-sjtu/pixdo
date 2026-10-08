@@ -83,6 +83,8 @@ object PreferenceLearner {
         val remainFiles: Int = 0,
         /** 该作品是在哪个搜索标签下处理的（偏好按搜索标签分上下文学习） */
         val sourceTag: String = "",
+        /** 整组删除（视为主观不喜欢）→ 权重计 1.0 */
+        val removed: Boolean = false,
     )
 
     /** 标签的「被下载 / 被用户删除」计数（删除按页数比例计权） */
@@ -122,7 +124,9 @@ object PreferenceLearner {
             }
             if (keys.isEmpty()) continue
             var weight = 0.0
-            if (w.pruned) {
+            if (w.removed) {
+                weight = 1.0                        // 整组删除 = 明确的「不喜欢」信号
+            } else if (w.pruned) {
                 val totalPages = if (w.pageCount > 0) w.pageCount else 1
                 weight = ((totalPages - w.remainFiles).toDouble() / totalPages).coerceIn(0.0, 1.0)
                 if (weight <= 0.0) weight = 1.0   // 兜底：状态为已精选但页数信息缺失

@@ -121,7 +121,8 @@ fun SettingsScreen(vm: MainViewModel, onOpenLogin: () -> Unit) {
         // ---- 查重 ----
         SettingCard(
             title = "查重（跳过已处理的 ID）",
-            desc = "已经下载过的作品不会重复下载；图片删除后会自动区分「整组不要了」与「挑片保留」。",
+            desc = "已经下载过的作品不会重复下载；整组删掉的作品视为不喜欢，不再补下并计入偏好学习" +
+                "（一次几乎删光则视为清理，下次重新下载）。",
             control = {
                 Switch(checked = config.dedup, onCheckedChange = { v ->
                     vm.updateConfig { c -> c.copy(dedup = v) }
@@ -131,6 +132,9 @@ fun SettingsScreen(vm: MainViewModel, onOpenLogin: () -> Unit) {
                 if (config.dedup) {
                     SwitchRow("跳过已过滤作品（低赞 / AI）", config.dedupSkipFiltered) { v ->
                         vm.updateConfig { c -> c.copy(dedupSkipFiltered = v) }
+                    }
+                    SwitchRow("整组删除后重新下载（视为清理）", config.redownloadDeleted) { v ->
+                        vm.updateConfig { c -> c.copy(redownloadDeleted = v) }
                     }
                 }
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {

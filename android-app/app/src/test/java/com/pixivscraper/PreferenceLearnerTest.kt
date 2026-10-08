@@ -14,7 +14,8 @@ class PreferenceLearnerTest {
         page: Int = 1,
         left: Int = 1,
         source: String = "test",
-    ) = PreferenceLearner.WorkTags(tags.toList(), pruned, page, left, source)
+        removed: Boolean = false,
+    ) = PreferenceLearner.WorkTags(tags.toList(), pruned, page, left, source, removed)
 
     @Test
     fun statsSkipIdentityTagsAndWeightByPages() {
@@ -92,6 +93,21 @@ class PreferenceLearnerTest {
         val pen = PreferenceLearner.penalties(ctx.counts, 3, ctx.baseline)
         assertFalse("基础标签不应被计入不喜欢", "貧乳" in pen)
         assertEquals(0.0 to "", PreferenceLearner.workPenalty(listOf("貧乳", "天童ケイ"), pen))
+    }
+
+    @Test
+    fun removedWorksCountAsStrongDislike() {
+        // 整组删掉的作品 = 明确的「不喜欢」→ 权重 1.0
+        val works = List(3) { w("巨乳", "全彩") } +
+            listOf(w("巨乳", "全彩", removed = true, page = 2, left = 0)) +
+            List(4) { w("全彩") }
+        val ctx = PreferenceLearner.buildContextStats(works, "test")
+
+        assertEquals(4, ctx.counts["巨乳"]!!.seen)
+        assertEquals(1.0, ctx.counts["巨乳"]!!.pruned, 1e-9)
+        assertTrue("全彩 是基础标签", "全彩" in ctx.baseline)
+        val pen = PreferenceLearner.penalties(ctx.counts, 3, ctx.baseline)
+        assertEquals(0.25, pen["巨乳"]!!, 1e-9)
     }
 
     @Test

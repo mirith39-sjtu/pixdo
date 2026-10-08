@@ -11,6 +11,7 @@ data class ScraperConfig(
     val r18Only: Boolean = false,
     val dedup: Boolean = true,
     val dedupSkipFiltered: Boolean = true,
+    val redownloadDeleted: Boolean = false,
     val filterNicheR18: Boolean = true,
     val allowedNiche: List<String> = emptyList(),
     val learnPrefer: Boolean = true,

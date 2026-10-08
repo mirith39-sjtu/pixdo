@@ -54,6 +54,9 @@ CONFIG = {
     "dedup": True,                     # True = 跳过曾经遍历/下载过的作品
     "dedup_skip_filtered": True,       # True = 被过滤(低赞/AI等)的作品也跳过
                                        #   False = 每次重新检查(点赞可能涨)
+    "redownload_deleted": False,       # True = 整组作品被删除时重新下载（视为清理）
+                                       #   False(默认) = 视为主观不喜欢：不再补下，并计入偏好学习
+                                       #     （一次对账里几乎全部记录都被删时仍按清理处理，避免误判）
     "history_db": os.path.join(_base_dir, "pixiv_history.db"),  # 记录表位置
     "tag_cache_file": os.path.join(_base_dir, "tag_suggest_cache.json"),  # 标签联想缓存
     # ---- 低产提醒（筛选效率过低时询问是否放宽点赞条件）----
@@ -228,7 +231,10 @@ def learn_context_stats(records, context_tag=None, assoc_ratio=0.6):
         if rec.get("status") == "filtered" or not keys:
             continue
         weight = 0.0
-        if rec.get("status") == "pruned":
+        st = rec.get("status")
+        if st == "removed":
+            weight = 1.0                        # 整组删除 = 明确的「不喜欢」信号
+        elif st == "pruned":
             pages = int(rec.get("page_count") or 1)
             left = len(rec.get("file_list") or [])
             weight = max(0.0, min(1.0, (pages - left) / pages)) if pages else 0.0
@@ -1121,14 +1127,17 @@ class HistoryStore:
 
     状态:
       downloaded = 全部页面都在(将被跳过, 不再下载)
-      missing    = 图片被手动删除/下载不完整(重新出现时补下载缺失的页)
-      pruned     = 用户只删了一部分（视为有意筛选，不再补下；全部删完时会变回 missing）
+      missing    = 文件不完整或整体被清理(下次重新下载缺失的页)
+      pruned     = 用户只删了一部分（视为有意筛选，不再补下）
+      removed    = 用户把整个作品删掉了（视为主观不喜欢：不再补下，并计入偏好学习）
       filtered   = 被过滤条件排除(低赞/AI 等; 默认也跳过, 可把
                    dedup_skip_filtered 设为 False 让它们每次重新检查)
 
     手动删除图片的同步:
-      每次运行开始时 reconcile() 会检查所有记录的文件是否还在，并区分两种删除：
-        - 整个作品的文件全没了 → missing（可能是整体清理）→ 下次重新下载
+      每次运行开始时 reconcile() 会检查所有记录的文件是否还在，并区分删除意图：
+        - 整个作品的文件全没了 → removed（视为主观不喜欢）→ 不再补下；
+          例外：一次对账里绝大多数记录都被全删（≥90% 且至少 3 条）→ 更像批量清理 → missing（重新下载），
+          也可把 CONFIG['redownload_deleted'] 设为 True 让整组删除总是按清理处理
         - 只删了一部分（挑掉不好看的）→ pruned → 视为有意保留，不再补下
       运行中遇到文件缺失的也会即时改状态。
     """
@@ -1196,12 +1205,13 @@ class HistoryStore:
                 self.conn = None
 
     def summary(self):
-        n = {"downloaded": 0, "missing": 0, "filtered": 0, "pruned": 0}
+        n = {"downloaded": 0, "missing": 0, "filtered": 0, "pruned": 0, "removed": 0}
         for r in self.records.values():
             if r.get("status") in n:
                 n[r["status"]] += 1
         return (f"共 {len(self.records)} 条（已下载 {n['downloaded']} / "
-                f"文件缺失 {n['missing']} / 已精选 {n['pruned']} / 已过滤 {n['filtered']}）")
+                f"文件缺失 {n['missing']} / 已精选 {n['pruned']} / "
+                f"已移除 {n['removed']} / 已过滤 {n['filtered']}）")
 
     # ---------------- 文件状态 ----------------
     @staticmethod
@@ -1228,19 +1238,51 @@ class HistoryStore:
         # 文件数本来就少于页数：之前被标记为 pruned（用户删掉了多余的页）则保持 pruned
         return "pruned" if rec.get("status") == "pruned" else "missing"
 
+    # 整组删除的语义判定：一次对账里「全删」占比 ≥ 90%（且至少 3 条）→ 更像是批量清理
+    _WHOLESALE_MIN = 3
+    _WHOLESALE_RATIO_PCT = 90
+
     def reconcile(self):
         """对账: 同步被手动删除/恢复的文件状态。
 
-        - 整个作品全删 → missing（下次重新下载）
+        - 整个作品全删 → removed（视为主观不喜欢：不再补下，并计入偏好学习）
+          例外 1：一次对账里绝大多数记录都被全删（更像批量清理）→ missing（下次重新下载）
+          例外 2：CONFIG['redownload_deleted'] = True → 总是按清理处理
         - 只删了一部分 → pruned（视为有意保留，不再补下）
         - 文件恢复齐全 → downloaded
-        返回 (变为 missing 的条数, 变为 pruned 的条数, 恢复为 downloaded 的条数)
+        返回 (变为 missing, 变为 pruned, 恢复为 downloaded, 变为 removed)
         """
-        to_missing = to_pruned = to_done = 0
+        checked = fully_deleted = 0
         for rec in self.records.values():
             if rec.get("status") not in ("downloaded", "missing", "pruned"):
                 continue
+            files = rec.get("file_list") or []
+            if not files:
+                continue
+            checked += 1
+            if not any(_file_ok(f) for f in files):
+                fully_deleted += 1
+        threshold = max(self._WHOLESALE_MIN,
+                        (checked * self._WHOLESALE_RATIO_PCT + 99) // 100)
+        wholesale = bool(checked) and fully_deleted >= threshold
+        redownload = bool(CONFIG.get("redownload_deleted", False))
+
+        to_missing = to_pruned = to_done = to_removed = 0
+        for rec in self.records.values():
+            st = rec.get("status")
+            if st not in ("downloaded", "missing", "pruned", "removed"):
+                continue
+            if st == "removed":
+                # 已判定为主观删除：仅在按清理处理（开关 / 整批清理）时恢复为待下载
+                if redownload or wholesale:
+                    rec["status"] = "missing"
+                    self._set_status(rec)
+                    to_missing += 1
+                continue
             new = self._eval_status(rec)
+            if new == "missing" and st in ("downloaded", "pruned") \
+                    and not wholesale and not redownload:
+                new = "removed"                     # 主观删除：不再补下
             if new == rec["status"]:
                 continue
             rec["status"] = new
@@ -1253,9 +1295,11 @@ class HistoryStore:
                 to_missing += 1
             elif new == "pruned":
                 to_pruned += 1
+            elif new == "removed":
+                to_removed += 1
             else:
                 to_done += 1
-        return to_missing, to_pruned, to_done
+        return to_missing, to_pruned, to_done, to_removed
 
     def _set_files(self, rec):
         try:
@@ -1294,8 +1338,11 @@ class HistoryStore:
             self._set_status(rec)
             return False, ""
         if st == "pruned":
-            # 用户主动删掉了一部分（视为有意筛选）→ 不再补下；全部删完时对账会变回 missing
+            # 用户主动删掉了一部分（视为有意筛选）→ 不再补下；全部删完时对账会变 removed
             return True, "已精选保留"
+        if st == "removed":
+            # 整组删除（视为主观不喜欢）→ 不再补下；可在设置里改为「整组删除后重新下载」
+            return True, "已移除·不再补下"
         if st == "filtered" and self.skip_filtered:
             return True, "已过滤"
         return False, ""
@@ -1542,11 +1589,14 @@ def _main_impl():
                                    skip_filtered=CONFIG.get("dedup_skip_filtered", True))
             history.open()
             _log(f"[*] 查重库: {CONFIG['history_db']} | {history.summary()}")
-            to_missing, to_pruned, to_done = history.reconcile()
+            to_missing, to_pruned, to_done, to_removed = history.reconcile()
             if to_missing:
-                _log(f"[*] 查重: {to_missing} 条记录被整体删除 → 下次将重新下载")
+                _log(f"[*] 查重: {to_missing} 条记录被整体删除 → 视为清理，下次将重新下载")
             if to_pruned:
                 _log(f"[*] 查重: {to_pruned} 条记录只删了一部分 → 视为有意保留，不再补下")
+            if to_removed:
+                _log(f"[*] 查重: {to_removed} 条作品被整组删除 → 视为不喜欢，不再补下（计入偏好学习；"
+                     f"想重新下载可在设置里开启「整组删除后重新下载」）")
             if to_done:
                 _log(f"[*] 查重: {to_done} 条记录的文件已恢复（状态更新为已下载）")
         except Exception as e:

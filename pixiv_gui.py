@@ -284,9 +284,11 @@ GUIDE_ITEMS = [
      "· 合成一次完成，帧数多时需要一些时间，属正常现象", "b"),
     ("查重说明", "h"),
     ("· 已下载且文件完整的作品自动跳过\n"
-     "· 删除图片后会区分情况：整个作品全删 → 视为清理，下次重新下载；\n"
+     "· 删除图片后会区分意图：\n"
      "   只删了一部分（挑掉几张不好看的）→ 视为有意保留，不再补下\n"
-     "· 在「设置」页可清空查重记录，让所有作品重新参与下载", "b"),
+     "   整组作品全删 → 视为不喜欢，不再补下，并计入删除偏好学习\n"
+     "   一次几乎删光（≥ 九成）→ 视为批量清理，下次重新下载\n"
+     "· 「设置」页可改为「整组删除后重新下载」，也可清空查重记录让所有作品重新参与", "b"),
     ("小众性癖过滤（R18）", "h"),
     ("· 内置常见小众性癖的标签库，默认全部过滤（仅对 R18 作品生效）\n"
      "· 在「设置」页勾选允许的类别后，这些类别的作品才会下载", "b"),
@@ -603,8 +605,8 @@ class PixivGUI:
         # ---- 查重 ----
         dedup = ttk.LabelFrame(inner, text="查重", padding=10)
         dedup.pack(fill=tk.X, pady=(0, 8))
-        self._desc(dedup, "已经下载过的作品不会重复下载；图片删除后会自动区分"
-                          "「整组不要了」与「挑片保留」。").pack(anchor="w")
+        self._desc(dedup, "已经下载过的作品不会重复下载；整组删掉的作品视为不喜欢，"
+                          "不再补下并计入偏好学习（一次几乎删光则视为清理，下次重新下载）。").pack(anchor="w")
         row = ttk.Frame(dedup)
         row.pack(fill=tk.X, pady=(6, 0))
         self.dedup_var = tk.BooleanVar(value=scraper.CONFIG.get("dedup", True))
@@ -617,6 +619,10 @@ class PixivGUI:
             value=scraper.CONFIG.get("dedup_skip_filtered", True))
         ttk.Checkbutton(self.dedup_skip_content, text="跳过已过滤作品（低赞 / AI）",
                         variable=self.dedup_skip_var).pack(side=tk.LEFT)
+        self.redownload_deleted_var = tk.BooleanVar(
+            value=scraper.CONFIG.get("redownload_deleted", False))
+        ttk.Checkbutton(self.dedup_skip_content, text="整组删除后重新下载（视为清理）",
+                        variable=self.redownload_deleted_var).pack(side=tk.LEFT, padx=12)
 
         # ---- 删除偏好学习（beta） ----
         learn = ttk.LabelFrame(inner, text="删除偏好学习（beta）", padding=10)
@@ -990,6 +996,7 @@ class PixivGUI:
             "show_browser": self.show_browser_var.get(),
             "dedup": self.dedup_var.get(),
             "dedup_skip_filtered": self.dedup_skip_var.get(),
+            "redownload_deleted": self.redownload_deleted_var.get(),
             "filter_niche_r18": self.filter_niche_var.get(),
             "allowed_niche": list(self.allowed_niche),
             "learn_prefer": self.learn_var.get(),
