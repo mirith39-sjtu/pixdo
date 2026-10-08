@@ -13,6 +13,8 @@ data class ScraperConfig(
     val dedupSkipFiltered: Boolean = true,
     val filterNicheR18: Boolean = true,
     val allowedNiche: List<String> = emptyList(),
+    val learnPrefer: Boolean = true,
+    val preferStrength: Int = 50,
     val notifyRun: Boolean = true,
 )
 

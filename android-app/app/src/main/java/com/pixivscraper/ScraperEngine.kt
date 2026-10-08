@@ -21,6 +21,9 @@ class ScraperEngine(private val context: Context) {
         /** 低产提醒：基础阈值（详情检查条数）；实际阈值 = max(该值, 目标数×10) */
         private const val LOW_YIELD_BASE = 500
 
+        /** 偏好学习：标签至少被下载过 N 次才参与统计 */
+        private const val PREFER_MIN_SEEN = 3
+
         /** 询问等待上限；超时按「继续查找」处理 */
         private const val ASK_TIMEOUT_MS = 120_000L
     }
@@ -94,6 +97,29 @@ class ScraperEngine(private val context: Context) {
                 }
             }
 
+            // ---- 删除偏好学习（beta）：从「已精选」记录统计功能性标签，后续降低其排序权重 ----
+            var tagPenalties: Map<String, Double> = emptyMap()
+            if (config.learnPrefer && db != null) {
+                try {
+                    val works = records.values.map {
+                        PreferenceLearner.WorkTags(
+                            it.tags, it.status == "pruned", it.pageCount, it.files.size,
+                        )
+                    }
+                    val stats = PreferenceLearner.buildStats(works)
+                    tagPenalties = PreferenceLearner.penalties(stats, PREFER_MIN_SEEN)
+                    if (tagPenalties.isNotEmpty()) {
+                        val desc = tagPenalties.entries.sortedByDescending { it.value }.take(6)
+                            .joinToString("、") { "${it.key} -${(it.value * 100).toInt()}%" }
+                        log("[*] 偏好学习: 统计 ${stats.size} 个功能性标签，降低 ${tagPenalties.size} 个标签的权重（$desc）")
+                    } else {
+                        log("[*] 偏好学习: 暂无足够删除样本（删掉部分图片后会自动学习）")
+                    }
+                } catch (e: Exception) {
+                    log("[!] 偏好学习失败（本次不启用）: ${e.message}")
+                }
+            }
+
             // ---- 搜索 + 详情筛选（不足目标数量时自动扩大扫描） ----
             val searchModes = when {
                 config.r18Only -> listOf("r18")
@@ -119,6 +145,7 @@ class ScraperEngine(private val context: Context) {
             val lowYieldStep = maxOf(LOW_YIELD_BASE, target * 10)
             var warnAsked = false                          // 每次运行只提醒一次
             val lowLikesDetails = ArrayList<WorkDetail>()  // 仅因点赞不足被过滤（放宽后从这里补回）
+            val penCache = HashMap<String, Pair<Double, String>>()  // id -> (偏好削减, 命中标签)
             var lowCount = 0
             var aiCount = 0
             var noImgCount = 0
@@ -228,7 +255,13 @@ class ScraperEngine(private val context: Context) {
                             // 不写入查重库：调整「允许的性癖」后下次运行可以重新尝试
                         }
                         else -> {
-                            label = "OK likes$likes ${imgNum}图"
+                            val (pen, penTag) = PreferenceLearner.workPenalty(d.tags, tagPenalties)
+                            penCache[d.id] = pen to penTag
+                            label = if (pen > 0) {
+                                "OK likes$likes ${imgNum}图 偏好-${(pen * 100).toInt()}%($penTag)"
+                            } else {
+                                "OK likes$likes ${imgNum}图"
+                            }
                             details.add(d)
                         }
                     }
@@ -334,7 +367,16 @@ class ScraperEngine(private val context: Context) {
                 return RunResult(true, downloaded = 0, skippedDup = skippedDup)
             }
 
-            details.sortByDescending { it.likeCount }
+            val strength = config.preferStrength.coerceIn(0, 100) / 100.0
+            details.sortWith(
+                compareByDescending<WorkDetail> {
+                    it.likeCount * (1 - strength * (penCache[it.id]?.first ?: 0.0))
+                }.thenByDescending { it.likeCount }
+            )
+            val lowered = details.count { (penCache[it.id]?.first ?: 0.0) > 0.0 }
+            if (lowered > 0 && strength > 0) {
+                log("[*] 偏好排序: $lowered 个作品因删除偏好下调权重（强度 ${config.preferStrength}%）")
+            }
             val ls = details.map { it.likeCount }
             log("[*] 点赞范围: ${ls.min()} ~ ${ls.max()}, 平均: ${ls.sum() / ls.size}")
 

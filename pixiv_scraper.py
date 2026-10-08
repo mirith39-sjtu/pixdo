@@ -23,6 +23,9 @@ from selenium.webdriver.edge.service import Service as EdgeSvc
 _is_frozen = getattr(sys, "frozen", False)
 _base_dir = os.path.dirname(sys.executable) if _is_frozen else os.path.dirname(os.path.abspath(__file__))
 
+# beta 版本号（正式版发布时另行同步）
+VERSION = "1.3.0-beta.1"
+
 # ============================================================
 CONFIG = {
     "tag": "天童ケイ",          # 搜索标签（日文结果更多）
@@ -59,6 +62,10 @@ CONFIG = {
     # ---- 小众性癖过滤（仅对 R18 作品生效）----
     "filter_niche_r18": True,          # True = 过滤命中的小众性癖（除 allowed_niche 允许的类别）
     "allowed_niche": [],               # 允许下载的类别 key（见 NICHE_FETISHES，空列表 = 全部过滤）
+    # ---- 删除偏好学习（beta：从删除行为学习不喜欢的标签并降低其权重）----
+    "learn_prefer": True,              # True = 根据「已精选」(用户删过) 统计功能性标签偏好
+    "prefer_strength": 50,             # 权重削减强度（0-100；越大影响越明显）
+    "prefer_min_seen": 3,              # 标签至少被下载过 N 次才参与统计
 }
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -134,6 +141,110 @@ def niche_blocked(tags, allowed):
     """是否命中「未允许」的小众性癖（调用方需自行保证只对 R18 作品使用）"""
     allowed = set(allowed or [])
     return any(h not in allowed for h in niche_hits(tags))
+
+
+# ============================================================
+# 删除偏好学习（beta）
+# 从「已精选(pruned，用户删掉了一部分)」的查重记录中统计功能性标签，
+# 下次运行降低这些标签作品的排序权重（不会直接排除）。
+# 角色名、作品名、系列名等身份标签不在词库里，因此不参与学习。
+# 词库可按需增删（标签以 pixiv 常用日文为主，附常见英文/中文写法）。
+# ============================================================
+
+FUNC_TAGS = [
+    ("体型 / 胸部", ["巨乳", "爆乳", "超乳", "デカパイ", "でかぱい", "貧乳", "贫乳", "微乳", "無乳",
+                   "ちっぱい", "ぺったんこ", "おっぱい", "パイズリ", "母乳", "谷間", "boobs", "bigboobs"]),
+    ("体型 / 其他", ["ふともも", "太もも", "魅惑のふともも", "お尻", "尻", "巨尻", "腹筋", "筋肉",
+                   "筋肉娘", "ぽっちゃり", "小柄", "長身", "陰毛", "すじ"]),
+    ("服装 / 制服系", ["制服", "セーラー服", "体操服", "ブルマ", "スク水", "スクール水着", "ナース",
+                    "メイド", "巫女", "シスター", "チャイナ服", "着物", "浴衣", "レオタード",
+                    "全身タイツ", "ボンテージ"]),
+    ("服装 / 内衣泳装", ["水着", "競泳水着", "ビキニ", "マイクロビキニ", "下着", "ランジェリー", "ブラジャー",
+                     "ぱんつ", "パンツ", "ノーパン", "ノーブラ", "ストッキング", "ニーソ", "パンスト",
+                     "手袋", "バニーガール", "裸エプロン", "パンチラ"]),
+    ("风格 / 形式", ["全彩", "フルカラー", "漫画", "コミック", "モノクロ", "線画", "ラフ", "3DCG", "CG",
+                   "コイカツ", "コイカツ!", "Koikatsu", "Ugoira", "うごイラ", "动图", "動画", "アニメ",
+                   "イラスト"]),
+    ("行为 / 性交", ["中出し", "外出し", "顔射", "口内射精", "ぶっかけ", "フェラ", "フェラチオ", "手コキ",
+                   "足コキ", "素股", "3P", "乱交", "複数プレイ", "ハーレム", "アナル", "後背位",
+                   "騎乗位", "オナニー", "潮吹き", "強制絶頂", "絶頂"]),
+    ("束缚 / 调教", ["拘束", "縛り", "緊縛", "調教", "SM", "BDSM", "首輪", "目隠し", "ローター",
+                   "バイブ", "痴漢", "催眠"]),
+    ("表情 / 反应", ["アヘ顔", "無様エロ", "涙目"]),
+    ("年龄感 / 学生", ["ロリ", "ロリコン", "loli", "萝莉", "ショタ", "ショタコン", "shota", "shotacon",
+                    "学生", "JK", "女子高生"]),
+    ("孕期 / 腹部", ["妊娠", "妊婦", "孕ませ", "子作り", "出産", "授乳", "ボテ腹", "腹ボコ",
+                   "inflation", "bodyinflation", "bloated"]),
+    ("变身 / 置换", ["性転換", "女体化", "男体化", "TSF", "入れ替わり", "乗っ取り", "皮モノ"]),
+    ("关系 / 情境", ["ラブラブ", "イチャラブ", "恋人", "新婚", "純愛", "人妻", "熟女", "MILF", "ギャル",
+                   "ビッチ", "痴女", "お姉さん", "巨根", "近親相姦", "incest"]),
+    ("癖好（含少量小众）", ["ふたなり", "NTR", "寝取られ", "寝取らせ", "触手", "獣姦", "機械姦", "リョナ"]),
+]
+
+_FUNC_LOOKUP = {}
+for _cat, _tags in FUNC_TAGS:
+    for _t in _tags:
+        _FUNC_LOOKUP[_t.strip().lower()] = _t
+
+
+def learn_tag_stats(records):
+    """统计功能性标签的「被下载 / 被用户删除」情况。
+
+    records: 查重记录（含 status / tags / page_count / file_list）。
+    - status == filtered 的不算（那是程序过滤，不是用户行为）
+    - 删除比例按「删掉页数 / 总页数」计权（删得越多，信号越强）
+    返回 {tag: [下载数, 删除权重]}。
+    """
+    stats = {}
+    for rec in records:
+        if rec.get("status") == "filtered":
+            continue
+        try:
+            tags = json.loads(rec.get("tags") or "[]")
+        except Exception:
+            continue
+        if not isinstance(tags, list):
+            continue
+        keys = {_FUNC_LOOKUP[_norm_tag(x)] for x in tags if _norm_tag(x) in _FUNC_LOOKUP}
+        if not keys:
+            continue
+        weight = 0.0
+        if rec.get("status") == "pruned":
+            total = int(rec.get("page_count") or 1)
+            left = len(rec.get("file_list") or [])
+            weight = max(0.0, min(1.0, (total - left) / total)) if total else 0.0
+            if weight <= 0:
+                weight = 1.0            # 兜底：状态为 pruned 但页数信息缺失
+        for k in keys:
+            ent = stats.setdefault(k, [0, 0.0])
+            ent[0] += 1
+            ent[1] += weight
+    return stats
+
+
+def learn_tag_penalties(stats, min_seen):
+    """标签的删除比例（0-1）；样本不足或从未被删的标签不参与"""
+    out = {}
+    for tag, (seen, pruned) in stats.items():
+        if pruned <= 0 or seen < max(1, int(min_seen or 1)):
+            continue
+        out[tag] = min(1.0, pruned / seen)
+    return out
+
+
+def learn_work_penalty(tags, penalties):
+    """作品命中的最大删除比例 + 对应标签（无命中返回 0 / ""）"""
+    best, best_tag = 0.0, ""
+    if not penalties or not tags:
+        return 0.0, ""
+    for t in tags:
+        tag = _FUNC_LOOKUP.get(_norm_tag(t))
+        if not tag:
+            continue
+        r = penalties.get(tag, 0.0)
+        if r > best:
+            best, best_tag = r, tag
+    return best, best_tag
 
 
 # ============================================================
@@ -1316,7 +1427,7 @@ def run_scraper(config_override=None, log_callback=None, ask_callback=None):
 def _main_impl():
     sep = "=" * 60
     r18_mode = "仅R18" if CONFIG.get("r18_only") else ("不含R18" if not CONFIG.get("include_r18", True) else "含R18")
-    _log(f"\n{sep}\n  Pixiv Scraper\n  标签: {CONFIG['tag']}"
+    _log(f"\n{sep}\n  Pixiv Scraper  v{VERSION}（beta）\n  标签: {CONFIG['tag']}"
          f" | 排序: {CONFIG['order']} | 目标: {CONFIG['max_images']} 张"
          f"\n  最低点赞: {CONFIG['min_likes']} | AI过滤: {CONFIG['filter_ai']}"
          f" | R18模式: {r18_mode}"
@@ -1348,6 +1459,24 @@ def _main_impl():
         except Exception as e:
             _log(f"[!] 查重库打开失败（本次不做去重）: {e}")
             history = None
+
+    # ---- 删除偏好学习（beta）：从「已精选」记录统计功能性标签，后续降低其排序权重 ----
+    tag_penalties_map = {}
+    if history is not None and CONFIG.get("learn_prefer", True):
+        try:
+            tstats = learn_tag_stats(history.records.values())
+            tag_penalties_map = learn_tag_penalties(
+                tstats, int(CONFIG.get("prefer_min_seen", 3) or 3))
+            if tag_penalties_map:
+                top = sorted(tag_penalties_map.items(), key=lambda kv: -kv[1])[:6]
+                desc = "、".join(f"{t} -{int(r * 100)}%" for t, r in top)
+                _log(f"[*] 偏好学习: 统计 {len(tstats)} 个功能性标签，"
+                     f"降低 {len(tag_penalties_map)} 个标签的权重（{desc}）")
+            else:
+                _log("[*] 偏好学习: 暂无足够删除样本（删掉部分图片后会自动学习）")
+        except Exception as e:
+            _log(f"[!] 偏好学习失败（本次不启用）: {e}")
+            tag_penalties_map = {}
 
     driver = None
     try:
@@ -1487,7 +1616,12 @@ def _main_impl():
                     lbl = "x 性癖"
                     # 不写入查重库：调整「允许的性癖」后下次运行可以重新尝试
                 else:
+                    pen, pen_tag = learn_work_penalty(d["tags"], tag_penalties_map)
+                    d["penalty"] = pen
+                    d["penalty_tag"] = pen_tag
                     lbl = f"OK likes{likes} {imgs}图"
+                    if pen:
+                        lbl += f" 偏好-{int(pen * 100)}%({pen_tag})"
                     details.append(d)
 
                 _log(f"  [{len(processed)}/{len(candidates)}] {c['illust_id']}: "
@@ -1573,7 +1707,13 @@ def _main_impl():
             _log("[*] 没有符合条件的作品可下载")
             return {"ok": True, "downloaded": 0, "skipped_dup": skipped_dup}
 
-        details.sort(key=lambda x: x["like_count"], reverse=True)
+        strength = max(0, min(100, int(CONFIG.get("prefer_strength", 50) or 0))) / 100.0
+        for d in details:
+            d["weight"] = d["like_count"] * (1 - strength * float(d.get("penalty") or 0.0))
+        details.sort(key=lambda x: (x["weight"], x["like_count"]), reverse=True)
+        lowered = sum(1 for d in details if d.get("penalty"))
+        if lowered and strength > 0:
+            _log(f"[*] 偏好排序: {lowered} 个作品因删除偏好下调权重（强度 {int(strength * 100)}%）")
         if details:
             ls = [d["like_count"] for d in details]
             _log(f"[*] 点赞范围: {min(ls)} ~ {max(ls)}, 平均: {sum(ls)//len(ls)}")

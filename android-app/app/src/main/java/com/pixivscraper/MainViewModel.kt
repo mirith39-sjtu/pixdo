@@ -219,6 +219,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 filterNicheR18 = sp.getBoolean("filterNicheR18", d.filterNicheR18),
                 allowedNiche = (sp.getString("allowedNiche", "") ?: "")
                     .split(',').map { it.trim() }.filter { it.isNotEmpty() },
+                learnPrefer = sp.getBoolean("learnPrefer", d.learnPrefer),
+                preferStrength = sp.getInt("preferStrength", d.preferStrength),
                 notifyRun = sp.getBoolean("notifyRun", d.notifyRun),
             )
         }
@@ -236,6 +238,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 .putBoolean("dedupSkipFiltered", c.dedupSkipFiltered)
                 .putBoolean("filterNicheR18", c.filterNicheR18)
                 .putString("allowedNiche", c.allowedNiche.joinToString(","))
+                .putBoolean("learnPrefer", c.learnPrefer)
+                .putInt("preferStrength", c.preferStrength)
                 .putBoolean("notifyRun", c.notifyRun)
                 .apply()
         }

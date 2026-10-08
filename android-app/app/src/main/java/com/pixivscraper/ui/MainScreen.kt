@@ -35,6 +35,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -546,6 +547,24 @@ private fun ConfigCard(
                     modifier = Modifier.weight(1f),
                 )
                 TextButton(onClick = { showNicheDialog = true }) { Text("选择…") }
+            }
+            SwitchRow("删除偏好学习（beta）", config.learnPrefer) { v ->
+                onChange { c -> c.copy(learnPrefer = v) }
+            }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "偏好削减强度 ${config.preferStrength}%",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.width(150.dp),
+                )
+                Slider(
+                    value = config.preferStrength.toFloat(),
+                    onValueChange = { v -> onChange { c -> c.copy(preferStrength = v.toInt()) } },
+                    valueRange = 0f..100f,
+                    steps = 9,
+                    modifier = Modifier.weight(1f),
+                )
             }
             SwitchRow("运行通知（后台 / 锁屏下载）", config.notifyRun) { v ->
                 onChange { c -> c.copy(notifyRun = v) }

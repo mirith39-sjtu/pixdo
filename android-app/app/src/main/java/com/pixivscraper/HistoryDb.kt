@@ -37,6 +37,7 @@ class HistoryDb(context: Context) :
         var reason: String,
         var folder: String,
         var files: List<String>,
+        var tags: List<String>,
         var createdAt: String,
         var updatedAt: String,
     )
@@ -163,12 +164,13 @@ class HistoryDb(context: Context) :
         status = c.getString(7) ?: "",
         reason = c.getString(8) ?: "",
         folder = c.getString(9) ?: "",
-        files = parseFiles(c.getString(10)),
+        files = parseStringList(c.getString(10)),
+        tags = parseStringList(c.getString(13)),
         createdAt = c.getString(11) ?: "",
         updatedAt = c.getString(12) ?: "",
     )
 
-    private fun parseFiles(raw: String?): List<String> {
+    private fun parseStringList(raw: String?): List<String> {
         if (raw.isNullOrEmpty()) return emptyList()
         return try {
             val arr = JSONArray(raw)
@@ -183,7 +185,7 @@ class HistoryDb(context: Context) :
     companion object {
         private const val SELECT_ALL =
             "SELECT illust_id,title,author,author_id,like_count,is_r18,page_count," +
-                "status,reason,folder,files,created_at,updated_at FROM works"
+                "status,reason,folder,files,created_at,updated_at,tags FROM works"
 
         /** 清空查重记录（删除数据库文件） */
         fun clear(context: Context): String {

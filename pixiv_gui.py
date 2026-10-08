@@ -258,7 +258,7 @@ class TagSuggestBox:
 class PixivGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Pixiv Scraper")
+        self.root.title(f"Pixiv Scraper {scraper.VERSION} (beta)")
         self.root.geometry("750x700")
         self.root.minsize(650, 600)
 
@@ -334,6 +334,19 @@ class PixivGUI:
         self.niche_btn = ttk.Button(row3b, text="", command=self._edit_niche, width=26)
         self.niche_btn.pack(side=tk.LEFT, padx=5)
         self._update_niche_btn()
+
+        # Row 3.7: 删除偏好学习（beta：从删除行为学习不喜欢的标签）
+        row3c = ttk.Frame(config_frame)
+        row3c.pack(fill=tk.X, pady=2)
+        self.learn_var = tk.BooleanVar(value=scraper.CONFIG.get("learn_prefer", True))
+        ttk.Checkbutton(row3c, text="删除偏好学习（beta）",
+                        variable=self.learn_var).pack(side=tk.LEFT, padx=5)
+        ttk.Label(row3c, text="权重削减强度(%):").pack(side=tk.LEFT, padx=(12, 0))
+        self.prefer_strength_var = tk.IntVar(value=scraper.CONFIG.get("prefer_strength", 50))
+        ttk.Spinbox(row3c, from_=0, to=100, increment=10,
+                    textvariable=self.prefer_strength_var, width=5).pack(side=tk.LEFT, padx=5)
+        ttk.Label(row3c, text="（删掉部分图片后自动学习不喜欢的标签）",
+                  foreground="gray").pack(side=tk.LEFT)
 
         # Row 5: 查重
         row5 = ttk.Frame(config_frame)
@@ -576,6 +589,8 @@ class PixivGUI:
             "dedup": self.dedup_var.get(),
             "filter_niche_r18": self.filter_niche_var.get(),
             "allowed_niche": list(self.allowed_niche),
+            "learn_prefer": self.learn_var.get(),
+            "prefer_strength": self.prefer_strength_var.get(),
         }
 
     def _start(self):

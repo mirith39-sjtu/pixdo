@@ -113,6 +113,14 @@ fun HelpScreen(onBack: () -> Unit) {
                 "· 默认全部过滤；在「允许的性癖」中勾选的类别才会下载"
         )
 
+        SectionTitle("删除偏好学习（beta）")
+        Body(
+            "· 会从「只删了一部分」的作品中统计功能性标签（如全彩 / 巨乳 / 漫画），\n" +
+                "   下次运行自动降低它们的排序权重（不会直接排除）\n" +
+                "· 角色名、作品名、系列名等身份标签不参与统计\n" +
+                "· 首页可调强度（0 = 关闭效果）；数据来自本地查重库，清除记录即重置"
+        )
+
         SectionTitle("筛选效率提醒")
         Body(
             "· 检查数量超过 max(500, 目标数×10) 仍凑不够时，提醒一次：\n" +
@@ -134,7 +142,7 @@ fun HelpScreen(onBack: () -> Unit) {
 
         Spacer(Modifier.height(24.dp))
         Text(
-            text = "pixdo v1.2.1 · 仅供个人学习使用",
+            text = "pixdo v1.3.0-beta.1（beta） · 仅供个人学习使用",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
