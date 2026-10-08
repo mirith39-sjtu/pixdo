@@ -17,8 +17,10 @@ private fun nowStamp(): String =
 
 /**
  * 查重记录表（与桌面版 pixiv_history.db 同构）。
- * 状态: downloaded / missing / filtered
- * - 手动删除图片后：运行开始时对账发现文件缺失 → missing → 重新补下载
+ * 状态: downloaded / missing / pruned / filtered
+ * - 手动删除图片后：运行开始时对账 ——
+ *     整个作品全删 = missing（下次重新下载）；
+ *     只删了一部分 = pruned（视为有意筛选，不再补下）
  */
 class HistoryDb(context: Context) :
     SQLiteOpenHelper(context.applicationContext, DB_NAME, null, 1) {
@@ -78,6 +80,15 @@ class HistoryDb(context: Context) :
     fun setStatus(id: String, status: String) {
         val v = ContentValues().apply {
             put("status", status)
+            put("updated_at", nowStamp())
+        }
+        writableDatabase.update("works", v, "illust_id=?", arrayOf(id))
+    }
+
+    /** 只保留现存文件（用于「部分删除 → pruned」时记录用户真正想留下的文件） */
+    fun setFiles(id: String, files: List<String>) {
+        val v = ContentValues().apply {
+            put("files", JSONArray(files).toString())
             put("updated_at", nowStamp())
         }
         writableDatabase.update("works", v, "illust_id=?", arrayOf(id))

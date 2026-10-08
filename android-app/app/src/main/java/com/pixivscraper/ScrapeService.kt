@@ -37,7 +37,12 @@ class ScrapeService : Service() {
         private const val NOTIF_ID = 1001
         private const val DONE_CHANNEL_ID = "pixdo_done"
         private const val DONE_NOTIF_ID = 1002
+        private const val ASK_CHANNEL_ID = "pixdo_ask"
+        private const val ASK_NOTIF_ID = 1003
         private const val ACTION_STOP = "com.pixivscraper.action.STOP"
+        private const val ACTION_ASK_CONTINUE = "com.pixivscraper.action.ASK_CONTINUE"
+        private const val ACTION_ASK_LOWER = "com.pixivscraper.action.ASK_LOWER"
+        private const val EXTRA_ASK_ID = "askId"
 
         fun start(context: Context) {
             ContextCompat.startForegroundService(
@@ -62,10 +67,25 @@ class ScrapeService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            // 点通知里的「停止」：请求引擎停止；服务会在运行状态清零后自行收起
-            RunState.stopFlag = true
-            return START_NOT_STICKY
+        when (intent?.action) {
+            ACTION_STOP -> {
+                // 点通知里的「停止」：请求引擎停止；服务会在运行状态清零后自行收起
+                RunState.stopFlag = true
+                return START_NOT_STICKY
+            }
+            ACTION_ASK_CONTINUE, ACTION_ASK_LOWER -> {
+                // 点「低产提醒」通知里的按钮：回答当前询问
+                val id = intent.getIntExtra(EXTRA_ASK_ID, -1)
+                if (id >= 0) {
+                    val choice = if (intent.action == ACTION_ASK_LOWER) {
+                        RunState.ASK_LOWER
+                    } else {
+                        RunState.ASK_CONTINUE
+                    }
+                    RunState.answerAsk(id, choice)
+                }
+                return START_NOT_STICKY
+            }
         }
 
         val notification = buildNotification()
@@ -87,14 +107,25 @@ class ScrapeService : Service() {
     /** 轮询运行状态，变化时刷新通知；任务结束后收起通知、弹「完成通知」并停止服务 */
     private suspend fun monitor() {
         var lastVersion = Int.MIN_VALUE
+        var shownAskId = -1
         val wasRunning = RunState.running
         while (RunState.running) {
             if (RunState.version != lastVersion) {
                 lastVersion = RunState.version
                 notify(buildNotification())
             }
+            // 低产提醒：出现询问时弹通知（带「继续查找 / 放宽」按钮），回答后收起
+            val ask = RunState.pendingAsk
+            if (ask != null && ask.id != shownAskId) {
+                shownAskId = ask.id
+                postAskNotification(ask)
+            } else if (ask == null && shownAskId != -1) {
+                shownAskId = -1
+                cancelAskNotification()
+            }
             delay(400)
         }
+        if (shownAskId != -1) cancelAskNotification()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         if (wasRunning) postDoneNotification()
         releaseWakeLock()
@@ -186,6 +217,56 @@ class ScrapeService : Service() {
         }
     }
 
+    /** 低产提醒通知：询问「继续查找 / 放宽点赞条件」（点按钮即可回答，不用打开应用） */
+    private fun postAskNotification(ask: LowYieldAsk) {
+        val openIntent = PendingIntent.getActivity(
+            this, 3,
+            Intent(this, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val continueIntent = PendingIntent.getService(
+            this, 10,
+            Intent(this, ScrapeService::class.java)
+                .setAction(ACTION_ASK_CONTINUE)
+                .putExtra(EXTRA_ASK_ID, ask.id),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val lowerIntent = PendingIntent.getService(
+            this, 11,
+            Intent(this, ScrapeService::class.java)
+                .setAction(ACTION_ASK_LOWER)
+                .putExtra(EXTRA_ASK_ID, ask.id),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val tip = if (ask.suggested > 0) "放宽到 ≥${ask.suggested} 赞" else "取消点赞过滤"
+        val text = "已检查 ${ask.scanned} 个作品，仅 ${ask.found}/${ask.target} 个满足" +
+            "「≥${ask.minLikes} 赞」；建议$tip（样本中约 ${ask.estCount} 个符合）"
+        val notification = NotificationCompat.Builder(this, ASK_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat_download)
+            .setContentTitle("筛选效率偏低，需要你的决定")
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setContentIntent(openIntent)
+            .setAutoCancel(false)
+            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+            .addAction(R.drawable.ic_stat_download, "继续查找", continueIntent)
+            .addAction(R.drawable.ic_stat_download, tip, lowerIntent)
+            .build()
+        try {
+            NotificationManagerCompat.from(this).notify(ASK_NOTIF_ID, notification)
+        } catch (_: SecurityException) {
+            // 未授予通知权限：应用内弹窗仍会提示
+        }
+    }
+
+    private fun cancelAskNotification() {
+        try {
+            NotificationManagerCompat.from(this).cancel(ASK_NOTIF_ID)
+        } catch (_: Exception) {
+        }
+    }
+
     private fun createChannel() {
         val mgr = getSystemService(NotificationManager::class.java)
         val channel = NotificationChannel(
@@ -207,6 +288,16 @@ class ScrapeService : Service() {
             setShowBadge(true)
         }
         mgr.createNotificationChannel(doneChannel)
+
+        val askChannel = NotificationChannel(
+            ASK_CHANNEL_ID,
+            "筛选提醒",
+            NotificationManager.IMPORTANCE_HIGH,
+        ).apply {
+            description = "筛选效率偏低时询问是否放宽点赞条件"
+            setShowBadge(true)
+        }
+        mgr.createNotificationChannel(askChannel)
     }
 
     private fun buildNotification(): Notification {
@@ -246,6 +337,7 @@ class ScrapeService : Service() {
     }
 
     override fun onDestroy() {
+        cancelAskNotification()
         releaseWakeLock()
         scope.cancel()
         super.onDestroy()

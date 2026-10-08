@@ -11,6 +11,8 @@ data class ScraperConfig(
     val r18Only: Boolean = false,
     val dedup: Boolean = true,
     val dedupSkipFiltered: Boolean = true,
+    val filterNicheR18: Boolean = true,
+    val allowedNiche: List<String> = emptyList(),
     val notifyRun: Boolean = true,
 )
 
@@ -18,8 +20,6 @@ data class ScraperConfig(
 data class WorkBrief(
     val id: String,
     val title: String,
-    val userName: String,
-    val pageCount: Int,
     val xRestrict: Int,
     val illustType: Int = 0,
 )
@@ -31,8 +31,6 @@ data class WorkDetail(
     val author: String,
     val authorId: String,
     val likeCount: Long,
-    val viewCount: Long,
-    val bookmarkCount: Long,
     val pageCount: Int,
     val isR18: Boolean,
     val tags: List<String>,

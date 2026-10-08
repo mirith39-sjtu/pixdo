@@ -177,8 +177,6 @@ object PixivApi {
                     WorkBrief(
                         id = id,
                         title = item.optString("title"),
-                        userName = item.optString("userName"),
-                        pageCount = item.optInt("pageCount", 1),
                         xRestrict = item.optInt("xRestrict"),
                         illustType = illustType,
                     )
@@ -245,8 +243,6 @@ object PixivApi {
             author = b.optString("userName").ifEmpty { b.optString("userAccount") },
             authorId = b.optString("userId"),
             likeCount = likeCount,
-            viewCount = b.optLong("viewCount"),
-            bookmarkCount = b.optLong("bookmarkCount"),
             pageCount = pageCount,
             isR18 = b.optInt("xRestrict") > 0,
             tags = parseTags(b.opt("tags")),

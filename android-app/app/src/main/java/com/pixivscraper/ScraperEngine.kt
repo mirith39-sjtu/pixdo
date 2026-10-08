@@ -17,6 +17,14 @@ import kotlin.math.max
  */
 class ScraperEngine(private val context: Context) {
 
+    companion object {
+        /** 低产提醒：基础阈值（详情检查条数）；实际阈值 = max(该值, 目标数×10) */
+        private const val LOW_YIELD_BASE = 500
+
+        /** 询问等待上限；超时按「继续查找」处理 */
+        private const val ASK_TIMEOUT_MS = 120_000L
+    }
+
     private data class DownloadMeta(
         val id: String,
         val title: String,
@@ -72,10 +80,13 @@ class ScraperEngine(private val context: Context) {
                     index = HashSet(store.buildIndex())
                     val downloaded = records.values.count { it.status == "downloaded" }
                     val missing = records.values.count { it.status == "missing" }
+                    val pruned = records.values.count { it.status == "pruned" }
                     val filtered = records.values.count { it.status == "filtered" }
-                    log("[*] 查重库: 共 ${records.size} 条（已下载 $downloaded / 文件缺失 $missing / 已过滤 $filtered）")
-                    val changed = reconcile(records, index, d)
-                    if (changed > 0) log("[*] 查重: $changed 条记录的文件被删除/恢复，已更新状态")
+                    log("[*] 查重库: 共 ${records.size} 条（已下载 $downloaded / 文件缺失 $missing / 已精选 $pruned / 已过滤 $filtered）")
+                    val rc = reconcile(records, index, d)
+                    if (rc.toMissing > 0) log("[*] 查重: ${rc.toMissing} 条记录被整体删除 → 下次将重新下载")
+                    if (rc.toPruned > 0) log("[*] 查重: ${rc.toPruned} 条记录只删了一部分 → 视为有意保留，不再补下")
+                    if (rc.toDone > 0) log("[*] 查重: ${rc.toDone} 条记录的文件已恢复（状态更新为已下载）")
                 } catch (e: Exception) {
                     log("[!] 查重库打开失败（本次不做去重）: ${e.message}")
                     db = null
@@ -104,11 +115,16 @@ class ScraperEngine(private val context: Context) {
             var pagesScanned = 0
 
             val details = ArrayList<WorkDetail>()
+            var effMinLikes = config.minLikes              // 允许在「低产提醒」中放宽
+            val lowYieldStep = maxOf(LOW_YIELD_BASE, target * 10)
+            var warnAsked = false                          // 每次运行只提醒一次
+            val lowLikesDetails = ArrayList<WorkDetail>()  // 仅因点赞不足被过滤（放宽后从这里补回）
             var lowCount = 0
             var aiCount = 0
             var noImgCount = 0
             var r18SkipCount = 0
             var safeSkipCount = 0
+            var nicheCount = 0
 
             val modeLabel = when {
                 config.r18Only -> "仅R18"
@@ -180,9 +196,10 @@ class ScraperEngine(private val context: Context) {
                     val imgNum = d.imageUrls.size
                     val label: String
                     when {
-                        config.minLikes > 0 && likes < config.minLikes -> {
+                        effMinLikes > 0 && likes < effMinLikes -> {
                             lowCount++
                             label = "x ${likes}赞"
+                            lowLikesDetails.add(d)
                             safeCall { db?.upsertFiltered(d, "low_likes") }
                         }
                         imgNum == 0 -> {
@@ -204,6 +221,12 @@ class ScraperEngine(private val context: Context) {
                             label = "x 非R18"
                             safeCall { db?.upsertFiltered(d, "safe_excluded") }
                         }
+                        d.isR18 && config.filterNicheR18 &&
+                            NicheFetishes.blocked(d.tags, config.allowedNiche) -> {
+                            nicheCount++
+                            label = "x 性癖"
+                            // 不写入查重库：调整「允许的性癖」后下次运行可以重新尝试
+                        }
                         else -> {
                             label = "OK likes$likes ${imgNum}图"
                             details.add(d)
@@ -212,6 +235,62 @@ class ScraperEngine(private val context: Context) {
                     log("  [${processed.size}/${candidates.size}] ${c.id}: ${d.title.take(30)} $label")
                     onPhase?.invoke("正在筛选详情 ${processed.size}/${candidates.size} · 已通过 ${details.size}")
                     delay(apiDelayMs)
+
+                    // ---- 低产提醒：检查了很多详情仍凑不够目标 → 询问是否放宽点赞条件（每次运行只提醒一次）----
+                    if (!warnAsked && effMinLikes > 0 && lowLikesDetails.isNotEmpty() &&
+                        details.size < target && processed.size >= lowYieldStep
+                    ) {
+                        val allLikes = ArrayList<Long>(details.size + lowLikesDetails.size)
+                        details.forEach { allLikes.add(it.likeCount) }
+                        lowLikesDetails.forEach { allLikes.add(it.likeCount) }
+                        val sug = lowYieldSuggest(allLikes, target, effMinLikes)
+                        if (sug.suggested < effMinLikes) {
+                            warnAsked = true
+                            log("  [!] 效率提醒：已检查 ${processed.size} 个作品，仅 ${details.size}/$target 个满足「≥$effMinLikes 赞」")
+                            log("      建议：放宽到 ≥${sug.suggested} 赞（样本 ${sug.sample} 个中约有 ${sug.est} 个符合）")
+                            val ask = LowYieldAsk(
+                                RunState.nextAskId(), processed.size, details.size, target,
+                                effMinLikes, sug.suggested, sug.est, sug.sample,
+                            )
+                            RunState.newAsk(ask)
+                            var waited = 0L
+                            while (RunState.pendingAsk?.id == ask.id && !isStopped() &&
+                                waited < ASK_TIMEOUT_MS
+                            ) {
+                                delay(250)
+                                waited += 250
+                            }
+                            val choice = if (RunState.pendingAsk?.id == ask.id) {
+                                // 超时 / 被停止：清理询问并按「继续查找」处理
+                                RunState.answerAsk(ask.id, RunState.ASK_CONTINUE)
+                                log("[*] 未收到选择（超时/停止），按「继续查找」处理")
+                                RunState.ASK_CONTINUE
+                            } else if (RunState.lastAnswerId == ask.id) {
+                                RunState.lastAnswerChoice
+                            } else {
+                                RunState.ASK_CONTINUE
+                            }
+                            if (choice == RunState.ASK_LOWER) {
+                                var moved = 0
+                                val it2 = lowLikesDetails.iterator()
+                                while (it2.hasNext()) {
+                                    val w = it2.next()
+                                    if (w.likeCount >= sug.suggested) {
+                                        details.add(w)
+                                        it2.remove()
+                                        moved++
+                                    }
+                                }
+                                lowCount = (lowCount - moved).coerceAtLeast(0)
+                                effMinLikes = sug.suggested
+                                log("  [*] 已放宽最低点赞 → ${sug.suggested} 赞：从已扫描作品中补入 $moved 个（当前 ${details.size}/$target）")
+                                if (details.size >= target) break
+                            } else {
+                                log("  [*] 继续按原条件查找")
+                            }
+                        }
+                    }
+
                     if (lowCount >= 20 && details.size >= target) {
                         log("  [*] 足够候选，停止详情获取")
                         break
@@ -246,7 +325,7 @@ class ScraperEngine(private val context: Context) {
             }
 
             log("")
-            log("[*] 低赞:$lowCount AI:$aiCount 无图:$noImgCount R18跳过:$r18SkipCount 非R18跳过:$safeSkipCount -> 有效:${details.size}")
+            log("[*] 低赞:$lowCount AI:$aiCount 无图:$noImgCount R18跳过:$r18SkipCount 非R18跳过:$safeSkipCount 性癖:$nicheCount -> 有效:${details.size}")
             if (details.size < target) {
                 log("[!] 满足条件的作品只有 ${details.size} 个（目标 $target）：已尽力扩大扫描，可尝试降低最低点赞或关闭 AI 过滤")
             }
@@ -369,22 +448,54 @@ class ScraperEngine(private val context: Context) {
 
     // ---------------- 查重逻辑（与桌面版一致） ----------------
 
+    private data class ReconcileResult(val toMissing: Int, val toPruned: Int, val toDone: Int)
+
+    /**
+     * 对账：同步被手动删除/恢复的文件状态。
+     * - 整个作品全删 → missing（下次重新下载）
+     * - 只删了一部分 → pruned（视为有意保留，不再补下）
+     * - 文件恢复齐全 → downloaded
+     */
     private fun reconcile(
         records: Map<String, HistoryDb.WorkRecord>,
         index: Set<String>,
         db: HistoryDb,
-    ): Int {
-        var changed = 0
+    ): ReconcileResult {
+        var toMissing = 0
+        var toPruned = 0
+        var toDone = 0
         for (rec in records.values) {
-            if (rec.status != "downloaded" && rec.status != "missing") continue
-            val newStatus = if (isComplete(rec, index)) "downloaded" else "missing"
-            if (newStatus != rec.status) {
-                rec.status = newStatus
-                safeCall { db.setStatus(rec.id, newStatus) }
-                changed++
+            if (rec.status != "downloaded" && rec.status != "missing" && rec.status != "pruned") continue
+            val newStatus = evalStatus(rec, index)
+            if (newStatus == rec.status) continue
+            rec.status = newStatus
+            if (newStatus == "pruned") {
+                rec.files = rec.files.filter { it in index }
+                safeCall { db.setFiles(rec.id, rec.files) }
+            }
+            safeCall { db.setStatus(rec.id, newStatus) }
+            when (newStatus) {
+                "missing" -> toMissing++
+                "pruned" -> toPruned++
+                else -> toDone++
             }
         }
-        return changed
+        return ReconcileResult(toMissing, toPruned, toDone)
+    }
+
+    /** 删除行为判断：全删 → missing；部分删 → pruned；齐全 → downloaded */
+    private fun evalStatus(rec: HistoryDb.WorkRecord, index: Set<String>): String {
+        val files = rec.files
+        if (files.isEmpty()) return "missing"
+        val present = files.count { it in index }
+        return when {
+            present == 0 -> "missing"
+            present < files.size -> "pruned"
+            files.size >= max(1, rec.pageCount) -> "downloaded"
+            // 文件数本来就少于页数：之前被标记为 pruned（用户删掉了多余的页）则保持 pruned
+            rec.status == "pruned" -> "pruned"
+            else -> "missing"
+        }
     }
 
     private fun shouldSkip(
@@ -409,6 +520,7 @@ class ScraperEngine(private val context: Context) {
                 false
             }
         }
+        "pruned" -> true // 用户主动删了一部分（视为有意筛选）→ 不再补下；全删时对账会变回 missing
         "filtered" -> skipFiltered
         else -> false
     }
@@ -523,6 +635,25 @@ class ScraperEngine(private val context: Context) {
         val w = max(1, (bmp.width * ratio).toInt())
         val h = max(1, (bmp.height * ratio).toInt())
         return Bitmap.createScaledBitmap(bmp, w, h, true)
+    }
+
+    // ---------------- 低产提醒（建议值估算） ----------------
+
+    private data class LowYieldSuggestion(val suggested: Int, val est: Int, val sample: Int)
+
+    /**
+     * 按样本点赞分布估算建议阈值：取第 target 高的点赞值（样本内约 target 个能过），
+     * 向下取整到 10；样本不足 target 时退回当前阈值的一半。
+     */
+    private fun lowYieldSuggest(likesList: List<Long>, target: Int, curMin: Int): LowYieldSuggestion {
+        val vals = likesList.sortedDescending()
+        val n = vals.size
+        val base: Long = if (target > 0 && n >= target) vals[target - 1] else (curMin / 2).toLong()
+        var sug = ((base / 10) * 10).toInt()
+        if (sug >= curMin) sug = (curMin * 6 / 10) / 10 * 10
+        if (sug < 0) sug = 0
+        val est = vals.count { it >= sug }
+        return LowYieldSuggestion(sug, est, n)
     }
 
     private fun isComplete(rec: HistoryDb.WorkRecord, index: Set<String>): Boolean {

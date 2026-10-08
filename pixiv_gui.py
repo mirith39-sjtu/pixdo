@@ -4,10 +4,12 @@ Pixiv 爬虫 GUI — tkinter 界面
 用法: python pixiv_gui.py
 """
 
+import json
 import os
 import queue
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
@@ -264,6 +266,11 @@ class PixivGUI:
         style = ttk.Style()
         style.theme_use("vista")
 
+        # 用户选项（小众性癖允许列表等，跨启动保存）
+        self._opts = self._load_options()
+        self.allowed_niche = [k for k in (self._opts.get("allowed_niche") or [])
+                              if isinstance(k, str)]
+
         # 主框架
         main_frame = ttk.Frame(root, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
@@ -310,8 +317,6 @@ class PixivGUI:
         row3.pack(fill=tk.X, pady=4)
         self.filter_ai_var = tk.BooleanVar(value=scraper.CONFIG.get("filter_ai", True))
         ttk.Checkbutton(row3, text="过滤AI", variable=self.filter_ai_var).pack(side=tk.LEFT, padx=5)
-        self.sep_r18_var = tk.BooleanVar(value=scraper.CONFIG.get("separate_r18", True))
-        ttk.Checkbutton(row3, text="R18分文件夹", variable=self.sep_r18_var).pack(side=tk.LEFT, padx=5)
         self.include_r18_var = tk.BooleanVar(value=scraper.CONFIG.get("include_r18", True))
         ttk.Checkbutton(row3, text="包含R18", variable=self.include_r18_var).pack(side=tk.LEFT, padx=5)
         self.r18_only_var = tk.BooleanVar(value=scraper.CONFIG.get("r18_only", False))
@@ -319,19 +324,16 @@ class PixivGUI:
         self.show_browser_var = tk.BooleanVar(value=scraper.CONFIG.get("show_browser", True))
         ttk.Checkbutton(row3, text="显示浏览器", variable=self.show_browser_var).pack(side=tk.LEFT, padx=5)
 
-        # Row 4: 标签分类
-        row4 = ttk.Frame(config_frame)
-        row4.pack(fill=tk.X, pady=2)
-        self.org_tags_var = tk.BooleanVar(value=bool(scraper.CONFIG.get("organize_by_tags", True)))
-        ttk.Checkbutton(row4, text="按标签分文件夹", variable=self.org_tags_var).pack(side=tk.LEFT, padx=5)
-        ttk.Label(row4, text="指定标签(逗号分隔，留空=自动):", width=28).pack(side=tk.LEFT)
-        default_tags = scraper.CONFIG.get("organize_by_tags", "")
-        if isinstance(default_tags, list):
-            default_tags = ", ".join(default_tags)
-        elif default_tags is True:
-            default_tags = ""
-        self.org_tags_list_var = tk.StringVar(value=default_tags if isinstance(default_tags, str) else "")
-        ttk.Entry(row4, textvariable=self.org_tags_list_var, width=25).pack(side=tk.LEFT, padx=5)
+        # Row 3.5: 小众性癖过滤（R18）
+        row3b = ttk.Frame(config_frame)
+        row3b.pack(fill=tk.X, pady=2)
+        self.filter_niche_var = tk.BooleanVar(value=bool(self._opts.get(
+            "filter_niche_r18", scraper.CONFIG.get("filter_niche_r18", True))))
+        ttk.Checkbutton(row3b, text="过滤小众性癖(R18)",
+                        variable=self.filter_niche_var).pack(side=tk.LEFT, padx=5)
+        self.niche_btn = ttk.Button(row3b, text="", command=self._edit_niche, width=26)
+        self.niche_btn.pack(side=tk.LEFT, padx=5)
+        self._update_niche_btn()
 
         # Row 5: 查重
         row5 = ttk.Frame(config_frame)
@@ -379,6 +381,90 @@ class PixivGUI:
         self.root.clipboard_clear()
         self.root.clipboard_append(self.log_text.get("1.0", tk.END).strip())
 
+    # ---------- 用户选项（跨启动保存） ----------
+
+    @property
+    def _options_path(self):
+        return os.path.join(getattr(scraper, "_base_dir", os.getcwd()), "pixdo_options.json")
+
+    def _load_options(self):
+        try:
+            with open(self._options_path, encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _save_options(self):
+        try:
+            with open(self._options_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "filter_niche_r18": bool(self.filter_niche_var.get()),
+                    "allowed_niche": list(self.allowed_niche),
+                }, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def _update_niche_btn(self):
+        n = len(self.allowed_niche)
+        self.niche_btn.configure(
+            text=f"允许的性癖：{n} 类…" if n else "允许的性癖：全部过滤…")
+
+    def _edit_niche(self):
+        """选择允许下载的小众性癖类别（勾选 = 允许）"""
+        dlg = tk.Toplevel(self.root)
+        dlg.title("允许下载的小众性癖（仅影响 R18）")
+        dlg.resizable(False, False)
+        try:
+            dlg.transient(self.root)
+            dlg.grab_set()
+        except tk.TclError:
+            pass
+        ttk.Label(
+            dlg,
+            text="勾选 = 允许下载该类作品；未勾选的类别会被过滤。\n"
+                 "全部不勾选 = 过滤所有小众性癖（仅对 R18 作品生效）",
+            justify=tk.LEFT,
+        ).pack(padx=16, pady=(14, 8), anchor="w")
+
+        vars_ = {}
+        box = ttk.Frame(dlg)
+        box.pack(fill=tk.BOTH, expand=True, padx=16)
+        for key, label, tags in scraper.NICHE_FETISHES:
+            row = ttk.Frame(box)
+            row.pack(fill=tk.X, anchor="w")
+            v = tk.BooleanVar(value=key in self.allowed_niche)
+            vars_[key] = v
+            ttk.Checkbutton(row, text=label, variable=v, width=22).pack(side=tk.LEFT)
+            ttk.Label(row, text="（" + "、".join(tags[:4]) + "）",
+                      foreground="gray").pack(side=tk.LEFT, padx=6)
+
+        btns = ttk.Frame(dlg)
+        btns.pack(pady=12)
+
+        def set_all(value):
+            for v in vars_.values():
+                v.set(value)
+
+        def close():
+            try:
+                dlg.grab_release()
+            except tk.TclError:
+                pass
+            dlg.destroy()
+
+        def ok():
+            self.allowed_niche = [k for k, v in vars_.items() if v.get()]
+            self._update_niche_btn()
+            self._save_options()
+            close()
+
+        ttk.Button(btns, text="全不选", command=lambda: set_all(False)).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btns, text="全选", command=lambda: set_all(True)).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btns, text="确定", command=ok).pack(side=tk.LEFT, padx=12)
+        ttk.Button(btns, text="取消", command=close).pack(side=tk.LEFT, padx=4)
+        dlg.protocol("WM_DELETE_WINDOW", close)
+
     def _browse_dir(self):
         d = filedialog.askdirectory(title="选择下载目录")
         if d:
@@ -401,6 +487,74 @@ class PixivGUI:
             self.log_text.see(tk.END)
         self.root.after(0, _append)
 
+    def _ask_low_yield(self, info):
+        """爬虫线程调用：弹窗询问是否放宽点赞条件。返回 "lower" / "continue"
+
+        弹窗在主线程显示，爬虫线程等待结果；超时（2 分钟）或用户点了
+        「停止」则按「继续查找」处理，避免任务长时间卡住。
+        """
+        sug = info.get("suggested", 0)
+        tip = f"放宽到 ≥{sug} 赞" if sug > 0 else "取消点赞过滤（设为 0）"
+        msg = (f"筛选效率偏低：\n\n"
+               f"已检查 {info['scanned']} 个作品的详情，"
+               f"仅 {info['found']} / {info['target']} 个满足「≥{info['min_likes']} 赞」。\n\n"
+               f"建议：{tip} —— 按已扫描的 {info['sample']} 个作品估算，"
+               f"这一档约有 {info['est']} 个作品符合。\n\n"
+               f"要继续按原条件查找，还是{tip}？")
+
+        box = {"choice": "continue"}
+        done = threading.Event()
+        holder = {}
+
+        def show():
+            dlg = tk.Toplevel(self.root)
+            holder["dlg"] = dlg
+            dlg.title("筛选效率提醒")
+            dlg.resizable(False, False)
+            try:
+                dlg.transient(self.root)
+                dlg.grab_set()
+            except tk.TclError:
+                pass
+            ttk.Label(dlg, text=msg, justify=tk.LEFT, wraplength=430).pack(
+                padx=18, pady=(16, 10))
+
+            def choose(choice):
+                box["choice"] = choice
+                try:
+                    dlg.grab_release()
+                except tk.TclError:
+                    pass
+                dlg.destroy()
+                done.set()
+
+            btns = ttk.Frame(dlg)
+            btns.pack(pady=(0, 14))
+            ttk.Button(btns, text=f"{tip}（推荐）",
+                       command=lambda: choose("lower")).pack(side=tk.LEFT, padx=6)
+            ttk.Button(btns, text="继续查找",
+                       command=lambda: choose("continue")).pack(side=tk.LEFT, padx=6)
+            dlg.protocol("WM_DELETE_WINDOW", lambda: choose("continue"))
+
+            # 尽量居中显示在主窗口上方
+            dlg.update_idletasks()
+            w, h = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+            x = self.root.winfo_rootx() + (self.root.winfo_width() - w) // 2
+            y = self.root.winfo_rooty() + (self.root.winfo_height() - h) // 3
+            dlg.geometry(f"+{max(0, x)}+{max(0, y)}")
+            dlg.lift()
+            dlg.focus_force()
+
+        self.root.after(0, show)
+        deadline = time.time() + 120
+        while not done.wait(0.2):
+            if scraper._should_stop() or time.time() > deadline:
+                box["choice"] = "continue"
+                self.root.after(0, lambda: holder.get("dlg") and holder["dlg"].destroy())
+                self._log_to_gui("[*] 未收到选择（超时/停止），按「继续查找」处理")
+                break
+        return box["choice"]
+
     def _set_status(self, text, color="gray"):
         def _set():
             self.status_var.set(text)
@@ -409,12 +563,6 @@ class PixivGUI:
 
     def _build_config(self):
         """从 GUI 控件构建配置 dict"""
-        org_tags_raw = self.org_tags_list_var.get().strip()
-        if org_tags_raw:
-            org_tags = [t.strip() for t in org_tags_raw.split(",") if t.strip()]
-        else:
-            org_tags = self.org_tags_var.get()  # True/False，按是否勾选
-
         return {
             "tag": self.tag_var.get().strip(),
             "order": self.order_var.get(),
@@ -422,16 +570,17 @@ class PixivGUI:
             "download_dir": self.dir_var.get().strip(),
             "min_likes": self.likes_var.get(),
             "filter_ai": self.filter_ai_var.get(),
-            "separate_r18": self.sep_r18_var.get(),
             "include_r18": self.include_r18_var.get(),
             "r18_only": self.r18_only_var.get(),
             "show_browser": self.show_browser_var.get(),
-            "organize_by_tags": org_tags,
             "dedup": self.dedup_var.get(),
+            "filter_niche_r18": self.filter_niche_var.get(),
+            "allowed_niche": list(self.allowed_niche),
         }
 
     def _start(self):
         config = self._build_config()
+        self._save_options()
 
         # 基本校验
         if not config["tag"]:
@@ -457,6 +606,7 @@ class PixivGUI:
             result = scraper.run_scraper(
                 config_override=config,
                 log_callback=self._log_to_gui,
+                ask_callback=self._ask_low_yield,
             )
             if result.get("ok"):
                 self._set_status(f"完成 — 下载 {result.get('downloaded', 0)} 个作品", "blue")

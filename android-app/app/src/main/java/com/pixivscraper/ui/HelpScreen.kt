@@ -100,8 +100,25 @@ fun HelpScreen(onBack: () -> Unit) {
 
         SectionTitle("查重说明")
         Body(
-            "· 已下载且文件完整的作品自动跳过；手动删除图片后，下次运行自动补下\n" +
+            "· 已下载且文件完整的作品自动跳过\n" +
+                "· 删除图片后：整个作品全删 → 视为清理，下次重新下载；\n" +
+                "   只删了一部分（挑掉几张不好看的）→ 视为有意保留，不再补下\n" +
                 "· 「跳过已过滤作品」默认开启；「清空查重记录」后所有作品重新参与下载"
+        )
+
+        SectionTitle("小众性癖过滤（R18）")
+        Body(
+            "· 内置人兽 / 兽交、扶她、触手、异种、机械、兽人、伪娘、性转、\n" +
+                "   NTR、猎奇、排泄、幼态、BL、扩张等类别标签库（仅对 R18 生效）\n" +
+                "· 默认全部过滤；在「允许的性癖」中勾选的类别才会下载"
+        )
+
+        SectionTitle("筛选效率提醒")
+        Body(
+            "· 检查数量超过 max(500, 目标数×10) 仍凑不够时，提醒一次：\n" +
+                "   「继续查找」或「放宽最低点赞」（附建议参考值）\n" +
+                "· 每次运行最多提醒一次；通知栏可直接选择，应用内也会弹出对话框\n" +
+                "· 较长时间未选择（2 分钟）会按「继续查找」自动继续"
         )
 
         SectionTitle("常见问题")
@@ -117,7 +134,7 @@ fun HelpScreen(onBack: () -> Unit) {
 
         Spacer(Modifier.height(24.dp))
         Text(
-            text = "pixdo v1.2 · 仅供个人学习使用",
+            text = "pixdo v1.2.1 · 仅供个人学习使用",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

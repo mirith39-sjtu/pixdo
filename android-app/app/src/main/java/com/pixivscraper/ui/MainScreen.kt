@@ -23,9 +23,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -40,6 +42,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -58,6 +61,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.PopupProperties
 import androidx.core.content.ContextCompat
 import com.pixivscraper.MainViewModel
+import com.pixivscraper.NicheFetishes
+import com.pixivscraper.RunState
 import com.pixivscraper.ScraperConfig
 import com.pixivscraper.TagSuggestion
 import kotlinx.coroutines.CancellationException
@@ -328,6 +333,35 @@ fun MainScreen(
             },
         )
     }
+
+    // 低产提醒：扫描了很多作品仍凑不够目标时，询问是否放宽点赞条件
+    val ask = vm.pendingAsk
+    if (ask != null) {
+        val tip = if (ask.suggested > 0) "放宽到 ≥${ask.suggested} 赞" else "取消点赞过滤（设为 0）"
+        AlertDialog(
+            onDismissRequest = { vm.answerAsk(ask.id, RunState.ASK_CONTINUE) },
+            title = { Text("筛选效率偏低") },
+            text = {
+                Text(
+                    "已检查 ${ask.scanned} 个作品的详情，只有 ${ask.found} / ${ask.target} 个" +
+                        "满足「≥${ask.minLikes} 赞」。\n\n" +
+                        "建议$tip —— 按已扫描的 ${ask.sample} 个作品估算，" +
+                        "这一档约有 ${ask.estCount} 个作品符合。\n\n" +
+                        "要继续按原条件查找，还是$tip？"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { vm.answerAsk(ask.id, RunState.ASK_LOWER) }) {
+                    Text(tip)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { vm.answerAsk(ask.id, RunState.ASK_CONTINUE) }) {
+                    Text("继续查找")
+                }
+            },
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -347,6 +381,7 @@ private fun ConfigCard(
 ) {
     // ---- 标签实时联想（pixiv 官方接口；选完候选后不再自动弹出，点击输入框才恢复）----
     var suggestEnabled by remember { mutableStateOf(false) }
+    var showNicheDialog by remember { mutableStateOf(false) }
     var queryTick by remember { mutableStateOf(0) }
     var suggestions by remember { mutableStateOf<List<TagSuggestion>>(emptyList()) }
     var expanded by remember { mutableStateOf(false) }
@@ -495,6 +530,23 @@ private fun ConfigCard(
             SwitchRow("跳过已过滤作品（低赞/AI）", config.dedupSkipFiltered) { v ->
                 onChange { c -> c.copy(dedupSkipFiltered = v) }
             }
+            SwitchRow("过滤小众性癖（R18）", config.filterNicheR18) { v ->
+                onChange { c -> c.copy(filterNicheR18 = v) }
+            }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = if (config.allowedNiche.isEmpty()) {
+                        "允许的性癖：全部过滤"
+                    } else {
+                        "允许的性癖（${config.allowedNiche.size}）：" +
+                            config.allowedNiche.joinToString("、") { NicheFetishes.labelOf(it) }
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = { showNicheDialog = true }) { Text("选择…") }
+            }
             SwitchRow("运行通知（后台 / 锁屏下载）", config.notifyRun) { v ->
                 onChange { c -> c.copy(notifyRun = v) }
                 if (v) onEnableNotify()
@@ -503,12 +555,68 @@ private fun ConfigCard(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = onClearHistory) { Text("清空查重记录") }
                 Text(
-                    text = "删除图片后运行会自动补下",
+                    text = "全删自动补下；只删一部分视为有意保留",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
+    }
+
+    // 小众性癖（R18）：勾选允许的类别，其余过滤
+    if (showNicheDialog) {
+        val selected = remember { mutableStateListOf<String>().apply { addAll(config.allowedNiche) } }
+        AlertDialog(
+            onDismissRequest = { showNicheDialog = false },
+            title = { Text("允许下载的性癖（R18）") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    Text(
+                        "勾选 = 允许；未勾选的类别会被过滤（全部不勾 = 过滤所有小众性癖）",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row {
+                        TextButton(onClick = { selected.clear() }) { Text("全不选") }
+                        TextButton(onClick = {
+                            selected.clear()
+                            NicheFetishes.CATEGORIES.forEach { selected.add(it.first) }
+                        }) { Text("全选") }
+                    }
+                    NicheFetishes.CATEGORIES.forEach { (key, label, tags) ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = key in selected,
+                                onCheckedChange = { v ->
+                                    if (v) {
+                                        if (key !in selected) selected.add(key)
+                                    } else {
+                                        selected.remove(key)
+                                    }
+                                },
+                            )
+                            Column {
+                                Text(label, style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    tags.take(4).joinToString("、"),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onChange { c -> c.copy(allowedNiche = selected.toList()) }
+                    showNicheDialog = false
+                }) { Text("确定") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showNicheDialog = false }) { Text("取消") }
+            },
+        )
     }
 }
 

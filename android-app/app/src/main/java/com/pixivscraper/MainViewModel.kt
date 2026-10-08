@@ -13,6 +13,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -35,6 +36,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     val logs = MutableStateFlow<List<String>>(emptyList())
 
+    /** 低产提醒：待用户选择的询问（继续查找 / 放宽点赞条件），来自 RunState */
+    var pendingAsk by mutableStateOf<LowYieldAsk?>(null)
+        private set
+
     private var job: Job? = null
 
     @Volatile
@@ -42,6 +47,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         refreshLogin()
+        // 低产提醒：轮询 RunState 中的询问（引擎等待回答时会暂停继续扫描）
+        viewModelScope.launch {
+            while (true) {
+                val a = RunState.pendingAsk
+                if (pendingAsk?.id != a?.id) pendingAsk = a
+                delay(400)
+            }
+        }
     }
 
     fun updateConfig(transform: (ScraperConfig) -> ScraperConfig) {
@@ -122,6 +135,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         appendLog("[!] 已请求停止（等待当前步骤完成）")
     }
 
+    /** 回答低产提醒（应用内弹窗用） */
+    fun answerAsk(id: Int, choice: Int) = RunState.answerAsk(id, choice)
+
     fun clearHistory(): String = HistoryDb.clear(getApplication())
 
     private var tagCache: TagSuggestCache? = null
@@ -200,6 +216,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 r18Only = sp.getBoolean("r18Only", d.r18Only),
                 dedup = sp.getBoolean("dedup", d.dedup),
                 dedupSkipFiltered = sp.getBoolean("dedupSkipFiltered", d.dedupSkipFiltered),
+                filterNicheR18 = sp.getBoolean("filterNicheR18", d.filterNicheR18),
+                allowedNiche = (sp.getString("allowedNiche", "") ?: "")
+                    .split(',').map { it.trim() }.filter { it.isNotEmpty() },
                 notifyRun = sp.getBoolean("notifyRun", d.notifyRun),
             )
         }
@@ -215,6 +234,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 .putBoolean("r18Only", c.r18Only)
                 .putBoolean("dedup", c.dedup)
                 .putBoolean("dedupSkipFiltered", c.dedupSkipFiltered)
+                .putBoolean("filterNicheR18", c.filterNicheR18)
+                .putString("allowedNiche", c.allowedNiche.joinToString(","))
                 .putBoolean("notifyRun", c.notifyRun)
                 .apply()
         }
