@@ -6,6 +6,7 @@ import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,11 +18,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -30,6 +33,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -46,6 +50,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -160,10 +165,69 @@ fun ScrapeScreen(
         Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        // 1: 搜索条件
+        // 1: 当前状态 / 进度（是否已开始、进行到哪一步、是否完成）
+        Card(Modifier.fillMaxWidth()) {
+            val prog = vm.progress
+            val target = if (prog.target > 0) prog.target else config.maxImages
+            val done = prog.downloaded
+            Column(Modifier.padding(14.dp)) {
+                val (title, titleColor) = when {
+                    vm.running -> "运行中" to MaterialTheme.colorScheme.primary
+                    vm.lastRunOk == true -> "已完成" to MaterialTheme.colorScheme.primary
+                    vm.lastRunOk == false -> "已中断" to MaterialTheme.colorScheme.error
+                    else -> "未开始" to MaterialTheme.colorScheme.onSurfaceVariant
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier
+                            .size(10.dp)
+                            .clip(CircleShape)
+                            .background(titleColor)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = titleColor,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        text = "已下载 $done / 目标 $target",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
+                when {
+                    vm.running && prog.downloading && target > 0 ->
+                        LinearProgressIndicator(
+                            progress = { (done.toFloat() / target).coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    vm.running ->
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    vm.lastRunOk == true ->
+                        LinearProgressIndicator(progress = { 1f }, modifier = Modifier.fillMaxWidth())
+                    else ->
+                        LinearProgressIndicator(progress = { 0f }, modifier = Modifier.fillMaxWidth())
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = when {
+                        vm.running -> prog.phase.ifBlank { "准备中…" }
+                        vm.lastRunOk != null -> vm.statusText
+                        else -> "填写标签后点击「开始爬取」，运行进度会显示在这里"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        // 2: 搜索条件
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(12.dp)) {
                 TagInputField(
@@ -282,9 +346,29 @@ fun ScrapeScreen(
             }
         }
 
-        // 4: 运行日志入口
+        // 5: 运行日志入口
         OutlinedButton(onClick = onOpenLog, modifier = Modifier.fillMaxWidth()) {
             Text("运行日志")
+        }
+
+        // 6: 小提示（填充页面，也顺便解答常见疑问）
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(14.dp)) {
+                Text("小提示", style = MaterialTheme.typography.titleSmall)
+                Spacer(Modifier.height(6.dp))
+                listOf(
+                    "运行时可以切到后台或锁屏，通知栏会显示进度，完成后会提醒。",
+                    "凑不够数量时可以降低「最低点赞」，或换一个更通用的标签。",
+                    "图片保存在相册 Pictures/PixivScraper/ 下，按标签分文件夹。",
+                    "首次使用请先到「设置」页完成登录；更多说明见「操作说明」。",
+                ).forEach { tip ->
+                    Text(
+                        text = "· $tip",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
         }
     }
 

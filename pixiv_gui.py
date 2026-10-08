@@ -458,6 +458,26 @@ class PixivGUI:
     def _build_scrape_tab(self):
         f = self.tab_scrape
 
+        # 当前状态 / 进度（开始前 / 运行中 / 已完成，一看就知道跑到哪一步）
+        st = ttk.LabelFrame(f, text="当前状态", padding=12)
+        st.pack(fill=tk.X, pady=(0, 10))
+        head = ttk.Frame(st)
+        head.pack(fill=tk.X)
+        self.state_var = tk.StringVar(value="未开始")
+        self.state_label = ttk.Label(head, textvariable=self.state_var,
+                                     font=(FONT, 12, "bold"))
+        self.state_label.pack(side=tk.LEFT)
+        self.count_var = tk.StringVar(value="已下载 0 / 目标 -")
+        ttk.Label(head, textvariable=self.count_var, foreground="#666666").pack(side=tk.RIGHT)
+        self.phase_var = tk.StringVar(value="填写标签后点击「开始爬取」")
+        ttk.Label(st, textvariable=self.phase_var, foreground="#666666").pack(
+            anchor="w", pady=(4, 6))
+        self.progress = ttk.Progressbar(st, mode="determinate", maximum=100, value=0)
+        self.progress.pack(fill=tk.X)
+        self._progress_mode = None
+        self._progress_done = 0
+        self._progress_target = 0
+
         box = ttk.LabelFrame(f, text="搜索条件", padding=12)
         box.pack(fill=tk.X)
 
@@ -508,13 +528,20 @@ class PixivGUI:
         self.run_btn.pack(side=tk.LEFT, padx=(0, 6))
         self.stop_btn = ttk.Button(btn, text="■  停止", command=self._stop, state=tk.DISABLED)
         self.stop_btn.pack(side=tk.LEFT, padx=6)
-        ttk.Button(btn, text="运行日志", command=self._open_log_window).pack(side=tk.LEFT, padx=6)
-        self.status_var = tk.StringVar(value="就绪")
-        self.status_label = ttk.Label(btn, textvariable=self.status_var, foreground="gray")
-        self.status_label.pack(side=tk.RIGHT, padx=6)
+        ttk.Button(btn, text="运行日志", command=self._open_log_window).pack(side=tk.RIGHT)
 
-        self._desc(f, "提示：更多设置（下载目录、过滤、查重、偏好学习等）在「设置」页。").pack(
-            anchor="w", pady=(10, 0))
+        # 小提示（填充剩余空间，让页面不显得空）
+        tips = ttk.LabelFrame(f, text="小提示", padding=12)
+        tips.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
+        for line in (
+            "运行中可以切后台 / 锁屏，进度看上方「当前状态」与通知栏（Android）。",
+            "凑不够数量时，可以降低「最低点赞」，或换一个更通用的标签。",
+            "图片保存在下载目录的 <标签>/safe 与 <标签>/r18 文件夹中，按点赞数命名。",
+            "首次使用请先到「设置」页检查登录状态（下载 R18 必须登录）。",
+            "更多说明见「操作说明」页，设置项集中在「设置」页。",
+        ):
+            ttk.Label(tips, text="· " + line, foreground="#666666",
+                      justify=tk.LEFT, wraplength=760).pack(anchor="w", pady=1)
 
     # ---------- 设置页 ----------
 
@@ -877,11 +904,67 @@ class PixivGUI:
 
     # ---------- 运行 ----------
 
-    def _set_status(self, text, color="gray"):
-        def _set():
-            self.status_var.set(text)
-            self.status_label.configure(foreground=color)
-        self.root.after(0, _set)
+    # ---------- 状态 / 进度显示 ----------
+
+    def _on_status(self, info):
+        """爬虫线程通过 status_callback 上报：转到主线程刷新界面"""
+        try:
+            self.root.after(0, lambda: self._apply_status(info))
+        except Exception:
+            pass
+
+    def _set_progress_mode(self, mode, value=None):
+        if self._progress_mode != mode:
+            self._progress_mode = mode
+            self.progress.stop()
+            self.progress.configure(mode=mode)
+            if mode == "indeterminate":
+                self.progress.start(60)
+        if mode == "determinate" and value is not None:
+            self.progress.configure(value=value)
+
+    def _apply_status(self, info):
+        """运行中：状态 = 运行中，阶段 / 进度条按上报信息刷新"""
+        state = str(info.get("state") or "starting")
+        phase = str(info.get("phase") or "")
+        try:
+            if info.get("target"):
+                self._progress_target = int(info["target"])
+            if info.get("downloaded") is not None:
+                self._progress_done = int(info["downloaded"])
+        except (TypeError, ValueError):
+            pass
+        self.state_var.set("运行中")
+        self.state_label.configure(foreground="#1e7b1e")
+        if phase:
+            self.phase_var.set(phase)
+        self.count_var.set(f"已下载 {self._progress_done} / 目标 "
+                           f"{self._progress_target or '-'}")
+        if state == "downloading" and self._progress_target > 0:
+            self._set_progress_mode(
+                "determinate",
+                min(100.0, self._progress_done * 100.0 / self._progress_target))
+        else:
+            self._set_progress_mode("indeterminate")
+
+    def _finish_status(self, ok, downloaded, skipped, reason):
+        """任务结束：已完成 / 已中断"""
+        def _apply():
+            self._set_progress_mode("determinate")
+            if ok:
+                self.state_var.set("已完成")
+                self.state_label.configure(foreground="#1e7b1e")
+                self.progress.configure(value=100)
+                tail = f"，查重跳过 {skipped} 个" if skipped else ""
+                self.phase_var.set(f"下载 {downloaded} 个作品{tail}（详情见「运行日志」）")
+                self.count_var.set(f"已下载 {downloaded} / 目标 "
+                                   f"{self._progress_target or downloaded}")
+            else:
+                self.state_var.set("已中断")
+                self.state_label.configure(foreground="#c0392b")
+                self.progress.configure(value=0)
+                self.phase_var.set(reason or "任务未完成（详情见「运行日志」）")
+        self.root.after(0, _apply)
 
     def _order_value(self):
         label = self.order_var.get()
@@ -944,21 +1027,23 @@ class PixivGUI:
         self._clear_log()
         self._open_log_window()
         self._log_to_gui("[*] 正在启动…")
+        self._apply_status({"state": "starting", "phase": "准备中…", "downloaded": 0,
+                            "target": int(self.max_var.get() or 0)})
 
         self.run_btn.configure(state=tk.DISABLED)
         self.stop_btn.configure(state=tk.NORMAL)
-        self._set_status("运行中…", "green")
 
         def runner():
             result = scraper.run_scraper(
                 config_override=config,
                 log_callback=self._log_to_gui,
                 ask_callback=self._ask_low_yield,
+                status_callback=self._on_status,
             )
-            if result.get("ok"):
-                self._set_status(f"完成 — 下载 {result.get('downloaded', 0)} 个作品", "blue")
-            else:
-                self._set_status(f"终止 — {result.get('reason', '未知错误')}", "red")
+            self._finish_status(bool(result.get("ok")),
+                                int(result.get("downloaded", 0) or 0),
+                                int(result.get("skipped_dup", 0) or 0),
+                                str(result.get("reason", "") or ""))
 
             # 恢复按钮 + 刷新登录状态
             def _done():
@@ -969,10 +1054,16 @@ class PixivGUI:
 
         self._thread = threading.Thread(target=runner, daemon=True)
         self._thread.start()
+
     def _stop(self):
         scraper.stop_scraper()
-        self._set_status("正在停止…", "orange")
         self.stop_btn.configure(state=tk.DISABLED)
+
+        def _apply():
+            self.state_var.set("正在停止…")
+            self.state_label.configure(foreground="orange")
+            self.phase_var.set("等待当前步骤结束（详情见「运行日志」）")
+        self.root.after(0, _apply)
         self._log_to_gui("[!] 已请求停止 (等待当前步骤完成)")
 
     def on_close(self):

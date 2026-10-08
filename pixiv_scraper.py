@@ -1353,6 +1353,7 @@ def clear_history():
 # GUI/外部调用钩子
 _log_callback = None       # 日志回调: fn(str)
 _ask_callback = None       # 低产提醒回调: fn(info) -> "lower"/"continue"（GUI 注入）
+_status_callback = None    # 运行状态回调: fn(info dict)（GUI 注入，用于主界面显示阶段/进度）
 _stop_flag = False         # 停止标志
 
 
@@ -1367,6 +1368,21 @@ def _log(msg):
             _log_callback(msg)
         except Exception:
             pass
+
+
+def _status(**info):
+    """上报运行状态（阶段 / 已下载 / 目标），供界面显示进度；回调异常不影响爬取。
+
+    info 常用键：state（starting/searching/filtering/downloading）、
+    phase（阶段文案）、downloaded、target。
+    """
+    cb = _status_callback
+    if not cb:
+        return
+    try:
+        cb(info)
+    except Exception:
+        pass
 
 
 def _should_stop():
@@ -1431,11 +1447,13 @@ def _ask_low_yield(info):
     return "lower" if str(ans).lower() == "lower" else "continue"
 
 
-def run_scraper(config_override=None, log_callback=None, ask_callback=None):
+def run_scraper(config_override=None, log_callback=None, ask_callback=None,
+                status_callback=None):
     # 可外部调用的入口，返回 {"ok": True/False, ...}
-    global _log_callback, _ask_callback, _stop_flag
+    global _log_callback, _ask_callback, _status_callback, _stop_flag
     _log_callback = log_callback
     _ask_callback = ask_callback
+    _status_callback = status_callback
     _stop_flag = False
     original = dict(CONFIG)
     if config_override:
@@ -1447,12 +1465,14 @@ def run_scraper(config_override=None, log_callback=None, ask_callback=None):
         CONFIG.update(original)
         _log_callback = None
         _ask_callback = None
+        _status_callback = None
         _stop_flag = False
 
 
 def _main_impl():
     sep = "=" * 60
     r18_mode = "仅R18" if CONFIG.get("r18_only") else ("不含R18" if not CONFIG.get("include_r18", True) else "含R18")
+    _status(state="starting", phase="准备中…", target=CONFIG.get("max_images", 0), downloaded=0)
     _log(f"\n{sep}\n  Pixiv Scraper  v{VERSION}（beta）\n  标签: {CONFIG['tag']}"
          f" | 排序: {CONFIG['order']} | 目标: {CONFIG['max_images']} 张"
          f"\n  最低点赞: {CONFIG['min_likes']} | AI过滤: {CONFIG['filter_ai']}"
@@ -1513,6 +1533,7 @@ def _main_impl():
         if _should_stop():
             return {"ok": False, "reason": "用户停止"}
 
+        _status(state="starting", phase="检查登录状态…", target=CONFIG.get("max_images", 0))
         ensure_logged_in(driver)
 
         if _should_stop():
@@ -1569,6 +1590,9 @@ def _main_impl():
                     items = search_api(api, CONFIG["tag"], CONFIG["order"],
                                        pages[mode], mode)
                     pages_scanned += 1
+                    _status(state="searching",
+                            phase=f"搜索作品（第 {pages_scanned} 页）",
+                            collected=len(candidates))
                     if not items:
                         _log(f"  [{mode}] 第 {pages[mode]} 页无结果，结束")
                         mode_done[mode] = True
@@ -1605,6 +1629,10 @@ def _main_impl():
                 if _should_stop():
                     return {"ok": False, "reason": "用户停止"}
                 processed.add(c["illust_id"])
+                _status(state="filtering",
+                        phase=f"筛选详情 {len(processed)}/{len(candidates)}",
+                        found=len(details), target=target,
+                        low=stats["low"], ai=stats["ai"], niche=stats["niche"])
                 d = detail_api(api, c["illust_id"])
                 d["title"] = d["title"] or c.get("title", "")
                 d["author"] = d["author"] or c.get("user_name", "")
@@ -1662,6 +1690,7 @@ def _main_impl():
                     sug, est, sample = _low_yield_suggest(all_likes, target, min_likes)
                     if sug < min_likes:
                         warned_once = True
+                        _status(state="filtering", phase="等待确认：是否放宽最低点赞…")
                         _log(f"  [!] 效率提醒：已检查 {len(processed)} 个作品，"
                              f"仅 {len(details)}/{target} 个满足「≥{min_likes} 赞」")
                         _log(f"      建议：放宽到 ≥{sug} 赞（按已扫描 {sample} 个作品的样本估算，"
@@ -1748,6 +1777,8 @@ def _main_impl():
         dl = 0
         meta = []
         base = os.path.join(CONFIG["download_dir"], sanitize(CONFIG["tag"]))
+        dl_total = min(len(details), CONFIG["max_images"])
+        _status(state="downloading", phase="下载图片", downloaded=dl, target=dl_total)
 
         for d in details:
             if _should_stop():
@@ -1755,6 +1786,7 @@ def _main_impl():
                 break
             if dl >= CONFIG["max_images"]:
                 break
+            _status(state="downloading", phase="下载图片", downloaded=dl, target=dl_total)
 
             is_r18 = d["is_r18"]
             if is_r18 and not CONFIG["include_r18"]:
@@ -1819,6 +1851,7 @@ def _main_impl():
 
             if ok_cnt:
                 dl += 1
+                _status(state="downloading", phase="下载图片", downloaded=dl, target=dl_total)
                 meta.append({"illust_id": lid, "title": title, "author": author,
                              "author_id": d["author_id"], "like_count": likes,
                              "view_count": d.get("view_count", 0),
