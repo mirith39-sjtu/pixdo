@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pixdo 更新日志 · v1.0 → v1.3</title>
+<meta name="description" content="pixdo 更新日志：v1.3 全新界面与删除偏好学习、v1.2 动图与标签联想、v1.1 后台下载、v1.0 首个正式版。">
+<link rel="icon" href="assets/icon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="./">
+      <img src="assets/icon.png" alt="pixdo 图标" width="28" height="28">
+      <span>pixdo</span>
+    </a>
+    <nav>
+      <a href="index.html#features">功能</a>
+      <a href="index.html#download">下载</a>
+      <a href="index.html#guide">使用</a>
+      <a href="index.html#faq">常见问题</a>
+      <a href="changelog.html">更新日志</a>
+      <a href="https://github.com/mirith39-sjtu/pixdo" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<section class="wrap log">
+  <h2>更新日志</h2>
+
+  <h3>v1.3 <span>2026-10-11 · Windows / Android 双端</span></h3>
+  <ul>
+    <li><b>全新界面</b>：顶部页面分栏（爬取 / 操作说明 / 设置 / 关于）；主页面只保留常用项，运行日志单独查看；设置页集中其余选项并附功能说明</li>
+    <li><b>运行状态面板</b>：主页面实时显示 未开始 / 运行中 / 已完成 / 已中断、当前阶段（搜索 → 筛选详情 → 下载 x/y）与进度条</li>
+    <li><b>删除偏好学习</b>：根据删除行为自动统计不喜欢的标签并在排序中降权（不会直接排除）
+      <ul>
+        <li>整组删除 = 明确不喜欢（权重最高，且不再补下）</li>
+        <li>挑片删除（清理重复图 / 无用图）默认不计入，可在设置中开启（权重封顶）</li>
+        <li>偏好按搜索标签分别学习；与搜索标签高度伴随的基础标签不会被计入</li>
+      </ul>
+    </li>
+    <li><b>删除行为判断调整</b>：整组删除不再自动重新下载；一次几乎删光（≥ 九成）才按批量清理处理（可在设置中切换）</li>
+    <li><b>筛选效率提醒</b>：检查很多作品仍凑不够数量时提醒一次，可一键放宽最低点赞（附建议参考值）</li>
+    <li><b>小众性癖过滤（R18）</b>：内置 14 类标签库，默认过滤，可勾选允许的类别</li>
+    <li>细节：条件显示控件、登录状态检测移至设置页、关于页补充风险与声明</li>
+  </ul>
+
+  <h3>v1.2 <span>2026-10-07 · 双端</span></h3>
+  <ul>
+    <li><b>动图（うごイラ）支持</b>：自动下载帧序列并合成为可播放的 GIF（逐帧延迟、无限循环、600px 播放版）</li>
+    <li><b>标签联想升级</b>：简繁 / 异体字变体 + 逐级去尾 + 结果重排，中文全名也能联想</li>
+    <li><b>筛选数量不足时自动扩大扫描</b>：继续翻页直到凑够目标或搜索穷尽</li>
+    <li>Android：修复切后台后筛选卡住；相册文件夹改为 <code>&lt;标签&gt;-safe</code> / <code>&lt;标签&gt;-r18</code></li>
+  </ul>
+
+  <h3>v1.1 <span>2026-10-05 · Android</span></h3>
+  <ul>
+    <li>前台服务 + 常驻进度通知：可切后台 / 锁屏继续，通知栏显示「正在下载 X / Y」并带「停止」按钮</li>
+    <li>任务结束通知：完成 / 停止 / 出错时提醒，点击回到 App</li>
+    <li>首页新增「运行通知」开关；Android 13+ 自动申请通知权限</li>
+  </ul>
+
+  <h3>v1.0 <span>2026-10-04</span></h3>
+  <ul>
+    <li>首个正式版：Windows 桌面版（免安装 exe）+ Android 版</li>
+  </ul>
+
+  <p class="note" style="margin-top:24px">下载最新版：<a href="https://github.com/mirith39-sjtu/pixdo/releases/latest" target="_blank" rel="noopener">GitHub Releases</a></p>
+</section>
+
+<footer class="footer">
+  <div class="wrap">
+    <p>pixdo ｜ <a href="index.html">返回首页</a> ｜ <a href="https://github.com/mirith39-sjtu/pixdo" target="_blank" rel="noopener">GitHub</a></p>
+    <p class="dim">本项目（含代码、界面与文案）全部由 AI 生成，仅供个人学习与技术研究使用；本应用与 pixiv 官方无关。</p>
+  </div>
+</footer>
+
+</body>
+</html>

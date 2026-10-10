@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pixdo · pixiv 插画批量下载工具（Windows / Android）</title>
+<meta name="description" content="pixdo 是一款 pixiv 插画批量下载工具：按标签搜索、点赞数筛选、R18 支持、标签联想、动图合成 GIF、内置查重与删除偏好学习，支持 Windows 与 Android。">
+<meta name="keywords" content="pixiv,批量下载,插画下载器,pixdo,pixiv下载,爬虫,GIF,动图">
+<meta property="og:title" content="pixdo · pixiv 插画批量下载工具">
+<meta property="og:description" content="按标签与点赞筛选，批量下载 pixiv 插画。Windows 免安装 + Android，双端同步。">
+<meta property="og:type" content="website">
+<meta property="og:image" content="assets/icon.png">
+<link rel="icon" href="assets/icon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="./">
+      <img src="assets/icon.png" alt="pixdo 图标" width="28" height="28">
+      <span>pixdo</span>
+    </a>
+    <nav>
+      <a href="#features">功能</a>
+      <a href="#download">下载</a>
+      <a href="#guide">使用</a>
+      <a href="#faq">常见问题</a>
+      <a href="changelog.html">更新日志</a>
+      <a href="https://github.com/mirith39-sjtu/pixdo" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap hero-inner">
+    <img class="hero-icon" src="assets/icon.png" alt="pixdo">
+    <h1>pixdo</h1>
+    <p class="slogan">pixiv 插画批量下载工具 · 按标签与点赞筛选，批量收藏你喜欢的作品</p>
+    <p class="tags">Windows 免安装 exe ｜ Android 8.0+ ｜ 双端同步</p>
+    <div class="btns">
+      <a class="btn primary" href="https://github.com/mirith39-sjtu/pixdo/releases/latest" target="_blank" rel="noopener">下载 Windows 版</a>
+      <a class="btn primary" href="https://github.com/mirith39-sjtu/pixdo/releases/latest" target="_blank" rel="noopener">下载 Android 版</a>
+      <a class="btn ghost" href="https://github.com/mirith39-sjtu/pixdo" target="_blank" rel="noopener">GitHub 仓库</a>
+    </div>
+    <p class="note">当前版本 v1.3 · 下载页会始终给出最新版本</p>
+  </div>
+</section>
+
+<section id="features" class="wrap">
+  <h2>功能特性</h2>
+  <div class="grid">
+    <div class="card"><h3>标签搜索 + 点赞筛选</h3><p>综合热门 / 最新 / 男性向 / 女性向；可设最低点赞数，过滤低赞与 AI 生成作品。</p></div>
+    <div class="card"><h3>R18 三模式</h3><p>不含 / 包含 / 仅 R18；Android 端自动按 <code>&lt;标签&gt;-safe</code>、<code>&lt;标签&gt;-r18</code> 分文件夹。</p></div>
+    <div class="card"><h3>中文标签联想</h3><p>输入中文自动联想官方日文 Tag（支持简繁与异体字），如「天童凯伊」→ 天童ケイ。</p></div>
+    <div class="card"><h3>动图（うごイラ）</h3><p>自动下载帧序列并合成为可播放的 GIF，帧延迟与 pixiv 原始数据一致。</p></div>
+    <div class="card"><h3>内置查重</h3><p>跨次运行自动跳过已处理作品；删除行为会被区分意图（挑片保留 / 整组不要 / 批量清理）。</p></div>
+    <div class="card"><h3>删除偏好学习</h3><p>根据你的删除行为学习不喜欢的标签并在排序中降权（按搜索标签分别学习，不会误伤基础标签）。</p></div>
+    <div class="card"><h3>筛选效率提醒</h3><p>检查很多作品仍凑不够数量时提醒一次，可一键放宽最低点赞（附建议参考值）。</p></div>
+    <div class="card"><h3>小众性癖过滤（R18）</h3><p>内置 14 类标签库，默认过滤，可勾选允许的类别。</p></div>
+    <div class="card"><h3>后台下载（Android）</h3><p>常驻进度通知，可切后台 / 锁屏继续；任务结束弹出完成提醒。</p></div>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2>界面与体验（v1.3）</h2>
+  <ul class="list">
+    <li>顶部页面分栏：<b>爬取 / 操作说明 / 设置 / 关于</b>，主页面只留常用项，干净清爽</li>
+    <li><b>运行状态面板</b>：实时显示运行状态、当前阶段（搜索 → 筛选详情 i/N → 下载 x/y）与进度条</li>
+    <li><b>运行日志</b>独立查看：Windows 为独立窗口，Android 为单独页面，支持复制 / 清空</li>
+    <li>设置项按需出现：未开启「包含 R18」不显示「仅 R18」，未开启偏好学习不显示强度滑条</li>
+  </ul>
+</section>
+
+<section id="download" class="wrap">
+  <h2>下载安装</h2>
+  <div class="grid two">
+    <div class="card dl">
+      <h3>Windows 桌面版</h3>
+      <p class="file"><code>pixdo-v1.3.exe</code> · 免安装，双击即用</p>
+      <p>需本机装有 Edge / Chrome（首次运行会打开浏览器等待登录）。</p>
+      <a class="btn primary" href="https://github.com/mirith39-sjtu/pixdo/releases/latest" target="_blank" rel="noopener">前往下载</a>
+    </div>
+    <div class="card dl">
+      <h3>Android 版</h3>
+      <p class="file"><code>pixdo-v1.3.apk</code> · 支持 Android 8.0 及以上</p>
+      <p>安装时如提示风险，选择「仍要安装」即可。</p>
+      <a class="btn primary" href="https://github.com/mirith39-sjtu/pixdo/releases/latest" target="_blank" rel="noopener">前往下载</a>
+    </div>
+  </div>
+  <p class="note">版本说明与历史版本见 <a href="changelog.html">更新日志</a>；下载页（Releases）始终提供最新文件。</p>
+</section>
+
+<section id="guide" class="wrap">
+  <h2>使用步骤</h2>
+  <div class="grid two">
+    <div class="card">
+      <h3>Windows</h3>
+      <ol>
+        <li>开启 VPN / 代理（需能访问 pixiv）</li>
+        <li>双击 <code>pixdo-v1.3.exe</code>，首次运行会自动打开浏览器等待登录</li>
+        <li>在「爬取」页设置标签、数量、最低点赞与 R18 选项，点「开始爬取」</li>
+        <li>图片保存在程序目录 <code>downloads/&lt;标签&gt;/safe|r18/</code></li>
+      </ol>
+    </div>
+    <div class="card">
+      <h3>Android</h3>
+      <ol>
+        <li>开启 VPN / 代理</li>
+        <li>到「设置」页点「登录」，在弹出的页面中登录 pixiv 账号</li>
+        <li>（下载 R18 必需）在 pixiv 网页版开启「設定 → 閲覧設定 → R-18作品の表示」</li>
+        <li>回到「爬取」页填写标签并开始，图片保存到相册 <code>Pictures/PixivScraper/</code></li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<section id="faq" class="wrap">
+  <h2>常见问题</h2>
+  <details><summary>一直显示「未登录」？</summary><p>检查代理是否生效，然后在「设置」页重新登录；也可删除本地的 cookies.pkl 后重试。</p></details>
+  <details><summary>搜索没有结果？</summary><p>检查标签拼写（推荐用日文 Tag）、排序设置与代理；标签联想需要能访问 pixiv 接口。</p></details>
+  <details><summary>提示 429 限流？</summary><p>程序会自动等待重试，属正常现象；建议保持默认请求间隔。</p></details>
+  <details><summary>R18 作品搜不到？</summary><p>需要登录状态，且账号已开启 pixiv 的 R-18 显示设置；游客状态下不会出现 R18 结果。</p></details>
+  <details><summary>删掉的图片会被重新下载吗？</summary><p>只删一部分 → 视为有意保留，不再补下；整组删光 → 视为不喜欢，不再补下；一次几乎删光（≥ 九成）→ 视为批量清理，下次重新下载。</p></details>
+  <details><summary>联想不出中文角色名？</summary><p>试试更短的词头（如「百合园」）；部分角色名需要先查过相关标签后走本地缓存命中。</p></details>
+</section>
+
+<section class="wrap">
+  <div class="risk">
+    <h3>⚠ 使用风险（必读）</h3>
+    <p>本工具通过 pixiv 公开接口批量获取内容。虽然内置了请求间隔与限流自动重试，但短时间内大量下载仍可能被判定为异常访问，可能导致接口限流、账号功能受限甚至封号。建议保持默认间隔、单次下载量不要过大；介意风险请使用小号。</p>
+    <p>下载内容仅供个人学习与收藏，<b>版权归原作者所有</b>，请勿传播或用于商业用途。</p>
+  </div>
+</section>
+
+<footer class="footer">
+  <div class="wrap">
+    <p>pixdo · v1.3 ｜ <a href="changelog.html">更新日志</a> ｜ <a href="https://github.com/mirith39-sjtu/pixdo" target="_blank" rel="noopener">GitHub</a></p>
+    <p class="dim">本项目（含代码、界面与文案）全部由 AI 生成，仅供个人学习与技术研究使用；本应用与 pixiv 官方无关。</p>
+  </div>
+</footer>
+
+</body>
+</html>

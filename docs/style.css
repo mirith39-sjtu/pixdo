@@ -1,0 +1,128 @@
+:root {
+  --accent: #4a7dff;
+  --accent2: #7c4dff;
+  --text: #1f2430;
+  --dim: #6b7280;
+  --line: #e5e7eb;
+  --bg: #ffffff;
+  --soft: #f6f7fb;
+  --warn-bg: #fff5f5;
+  --warn-line: #f3b7b7;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: "Microsoft YaHei UI", "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+  line-height: 1.75;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+code {
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 0.92em;
+}
+
+.wrap { max-width: 1040px; margin: 0 auto; padding: 0 20px; }
+
+/* 顶栏 */
+.nav {
+  position: sticky; top: 0; z-index: 10;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line);
+}
+.nav-inner { display: flex; align-items: center; gap: 18px; height: 58px; }
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 700; color: var(--text); font-size: 18px; }
+.brand img { border-radius: 7px; }
+.nav nav { margin-left: auto; display: flex; gap: 16px; flex-wrap: wrap; }
+.nav nav a { color: var(--dim); font-size: 14px; }
+.nav nav a:hover { color: var(--accent); }
+
+/* 首屏 */
+.hero {
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent2) 100%);
+  color: #fff;
+  padding: 64px 0 56px;
+}
+.hero-inner { text-align: center; }
+.hero-icon {
+  width: 88px; height: 88px; border-radius: 22px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22);
+  background: rgba(255, 255, 255, 0.12);
+}
+.hero h1 { font-size: 46px; margin: 16px 0 6px; letter-spacing: 1px; }
+.slogan { font-size: 17px; margin: 0 0 6px; opacity: 0.95; }
+.tags { font-size: 13px; opacity: 0.85; margin: 0 0 22px; }
+.btns { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+.btn {
+  display: inline-block; padding: 10px 22px; border-radius: 999px;
+  font-size: 15px; border: 1px solid transparent; transition: transform .12s ease;
+}
+.btn:hover { text-decoration: none; transform: translateY(-1px); }
+.btn.primary { background: #fff; color: var(--accent2); font-weight: 600; }
+.btn.ghost { border-color: rgba(255, 255, 255, 0.7); color: #fff; }
+.dl .btn.primary { background: var(--accent); color: #fff; }
+.hero .note { margin-top: 16px; font-size: 13px; opacity: 0.85; }
+
+/* 区块 */
+section { padding: 44px 0; }
+section h2 {
+  font-size: 22px; margin: 0 0 18px;
+  padding-left: 12px; border-left: 4px solid var(--accent);
+}
+.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.grid.two { grid-template-columns: repeat(2, 1fr); }
+.card {
+  border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px;
+  background: #fff;
+}
+.card h3 { margin: 0 0 6px; font-size: 16px; }
+.card p { margin: 0; font-size: 14px; color: var(--dim); }
+.card .file { color: var(--text); margin-bottom: 6px; }
+.list { padding-left: 20px; }
+.list li { margin-bottom: 6px; }
+.note { color: var(--dim); font-size: 13px; }
+
+/* FAQ */
+details {
+  border: 1px solid var(--line); border-radius: 10px;
+  padding: 10px 14px; margin-bottom: 10px; background: #fff;
+}
+details summary { cursor: pointer; font-weight: 600; }
+details p { margin: 8px 0 0; color: var(--dim); font-size: 14px; }
+
+/* 风险提示 */
+.risk {
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-line);
+  border-radius: 12px;
+  padding: 18px 20px;
+}
+.risk h3 { margin: 0 0 8px; color: #b42318; }
+.risk p { margin: 0 0 8px; font-size: 14px; }
+
+/* 页脚 */
+.footer { border-top: 1px solid var(--line); padding: 26px 0 40px; margin-top: 20px; }
+.footer p { margin: 0 0 6px; font-size: 14px; }
+.dim { color: var(--dim); font-size: 13px; }
+
+/* 更新日志页 */
+.log h3 { margin: 26px 0 8px; font-size: 18px; }
+.log h3 span { font-size: 13px; color: var(--dim); font-weight: 400; margin-left: 8px; }
+.log ul { padding-left: 20px; }
+.log li { margin-bottom: 6px; }
+
+@media (max-width: 860px) {
+  .grid, .grid.two { grid-template-columns: 1fr; }
+  .hero h1 { font-size: 36px; }
+  .nav nav { gap: 12px; }
+}
