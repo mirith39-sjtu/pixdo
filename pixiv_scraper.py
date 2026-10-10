@@ -23,6 +23,9 @@ from selenium.webdriver.edge.service import Service as EdgeSvc
 _is_frozen = getattr(sys, "frozen", False)
 _base_dir = os.path.dirname(sys.executable) if _is_frozen else os.path.dirname(os.path.abspath(__file__))
 
+# 版本号
+VERSION = "1.3"
+
 # ============================================================
 CONFIG = {
     "tag": "天童ケイ",          # 搜索标签（日文结果更多）
@@ -51,6 +54,9 @@ CONFIG = {
     "dedup": True,                     # True = 跳过曾经遍历/下载过的作品
     "dedup_skip_filtered": True,       # True = 被过滤(低赞/AI等)的作品也跳过
                                        #   False = 每次重新检查(点赞可能涨)
+    "redownload_deleted": False,       # True = 整组作品被删除时重新下载（视为清理）
+                                       #   False(默认) = 视为主观不喜欢：不再补下，并计入偏好学习
+                                       #     （一次对账里几乎全部记录都被删时仍按清理处理，避免误判）
     "history_db": os.path.join(_base_dir, "pixiv_history.db"),  # 记录表位置
     "tag_cache_file": os.path.join(_base_dir, "tag_suggest_cache.json"),  # 标签联想缓存
     # ---- 低产提醒（筛选效率过低时询问是否放宽点赞条件）----
@@ -59,6 +65,13 @@ CONFIG = {
     # ---- 小众性癖过滤（仅对 R18 作品生效）----
     "filter_niche_r18": True,          # True = 过滤命中的小众性癖（除 allowed_niche 允许的类别）
     "allowed_niche": [],               # 允许下载的类别 key（见 NICHE_FETISHES，空列表 = 全部过滤）
+    # ---- 删除偏好学习（beta：从删除行为学习不喜欢的标签并降低其权重）----
+    "learn_prefer": True,              # True = 根据「已精选」(用户删过) 统计功能性标签偏好
+    "learn_from_partial": False,       # True = 挑片删除（同一作品只删了几页）也计入学习（权重封顶 0.5）
+                                       #   False(默认) = 只看「整组删除」——清理重复图/无用图不会影响学习
+    "prefer_strength": 50,             # 权重削减强度（0-100；越大影响越明显）
+    "prefer_min_seen": 3,              # 标签至少被下载过 N 次才参与统计
+    "prefer_assoc_ratio": 0.6,         # 与搜索标签高度伴随（出现比例≥该值）的标签视为「基础标签」不参与学习
 }
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -134,6 +147,151 @@ def niche_blocked(tags, allowed):
     """是否命中「未允许」的小众性癖（调用方需自行保证只对 R18 作品使用）"""
     allowed = set(allowed or [])
     return any(h not in allowed for h in niche_hits(tags))
+
+
+# ============================================================
+# 删除偏好学习（beta）
+# 从「已精选(pruned，用户删掉了一部分)」的查重记录中统计功能性标签，
+# 下次运行降低这些标签作品的排序权重（不会直接排除）。
+# 角色名、作品名、系列名等身份标签不在词库里，因此不参与学习。
+# 词库可按需增删（标签以 pixiv 常用日文为主，附常见英文/中文写法）。
+# ============================================================
+
+FUNC_TAGS = [
+    ("体型 / 胸部", ["巨乳", "爆乳", "超乳", "デカパイ", "でかぱい", "貧乳", "贫乳", "微乳", "無乳",
+                   "ちっぱい", "ぺったんこ", "おっぱい", "パイズリ", "母乳", "谷間", "boobs", "bigboobs"]),
+    ("体型 / 其他", ["ふともも", "太もも", "魅惑のふともも", "お尻", "尻", "巨尻", "腹筋", "筋肉",
+                   "筋肉娘", "ぽっちゃり", "小柄", "長身", "陰毛", "すじ"]),
+    ("服装 / 制服系", ["制服", "セーラー服", "体操服", "ブルマ", "スク水", "スクール水着", "ナース",
+                    "メイド", "巫女", "シスター", "チャイナ服", "着物", "浴衣", "レオタード",
+                    "全身タイツ", "ボンテージ"]),
+    ("服装 / 内衣泳装", ["水着", "競泳水着", "ビキニ", "マイクロビキニ", "下着", "ランジェリー", "ブラジャー",
+                     "ぱんつ", "パンツ", "ノーパン", "ノーブラ", "ストッキング", "ニーソ", "パンスト",
+                     "手袋", "バニーガール", "裸エプロン", "パンチラ"]),
+    ("风格 / 形式", ["全彩", "フルカラー", "漫画", "コミック", "モノクロ", "線画", "ラフ", "3DCG", "CG",
+                   "コイカツ", "コイカツ!", "Koikatsu", "Ugoira", "うごイラ", "动图", "動画", "アニメ",
+                   "イラスト"]),
+    ("行为 / 性交", ["中出し", "外出し", "顔射", "口内射精", "ぶっかけ", "フェラ", "フェラチオ", "手コキ",
+                   "足コキ", "素股", "3P", "乱交", "複数プレイ", "ハーレム", "アナル", "後背位",
+                   "騎乗位", "オナニー", "潮吹き", "強制絶頂", "絶頂"]),
+    ("束缚 / 调教", ["拘束", "縛り", "緊縛", "調教", "SM", "BDSM", "首輪", "目隠し", "ローター",
+                   "バイブ", "痴漢", "催眠"]),
+    ("表情 / 反应", ["アヘ顔", "無様エロ", "涙目"]),
+    ("年龄感 / 学生", ["ロリ", "ロリコン", "loli", "萝莉", "ショタ", "ショタコン", "shota", "shotacon",
+                    "学生", "JK", "女子高生"]),
+    ("孕期 / 腹部", ["妊娠", "妊婦", "孕ませ", "子作り", "出産", "授乳", "ボテ腹", "腹ボコ",
+                   "inflation", "bodyinflation", "bloated"]),
+    ("变身 / 置换", ["性転換", "女体化", "男体化", "TSF", "入れ替わり", "乗っ取り", "皮モノ"]),
+    ("关系 / 情境", ["ラブラブ", "イチャラブ", "恋人", "新婚", "純愛", "人妻", "熟女", "MILF", "ギャル",
+                   "ビッチ", "痴女", "お姉さん", "巨根", "近親相姦", "incest"]),
+    ("癖好（含少量小众）", ["ふたなり", "NTR", "寝取られ", "寝取らせ", "触手", "獣姦", "機械姦", "リョナ"]),
+]
+
+_FUNC_LOOKUP = {}
+for _cat, _tags in FUNC_TAGS:
+    for _t in _tags:
+        _FUNC_LOOKUP[_t.strip().lower()] = _t
+
+
+def learn_context_stats(records, context_tag=None, assoc_ratio=0.6, count_partial=False):
+    """按「搜索标签」统计：功能性标签的下载/删除计数 + 与搜索标签高度伴随的标签。
+
+    为什么要分上下文：
+      · 同一个标签在不同搜索标签下的含义可能相反（搜索贫乳角色时删掉「巨乳」版本，
+        搜索巨乳角色时删掉「贫乳」版本）——共用一份衰减表会互相干扰。
+      · 如果某个标签几乎出现在该搜索标签下的所有作品里（如贫乳角色下的「贫乳」），
+        它其实是这个标签下的「基础/身份特征」，删除行为不应归因于它。
+
+    删除信号强度：
+      · removed（整组作品全删）→ 权重 1.0：明确的「不喜欢这个作品」
+      · pruned（同一作品只删了几页，如清理重复图/无用图）→ 默认不计入（count_partial=False）；
+        开启后权重 = 删掉页数占比，但封顶 0.5（用户留下了作品，属于弱信号）
+
+    参数:
+      records: 查重记录（含 source_tag / status / tags / page_count / file_list）。
+      context_tag: 只统计 source_tag 等于它的记录；空值 = 统计全部（旧版兼容）。
+      assoc_ratio: 出现比例 ≥ 该值 → 视为基础标签，不参与学习。
+      count_partial: 挑片删除（pruned）是否计入删除权重。
+
+    返回 (stats, baseline, total)：
+      stats    = {功能标签: [下载数, 删除权重]}（filtered 记录不计入）
+      baseline = 与该搜索标签高度伴随的功能标签集合
+      total    = 该上下文下的作品总数（用于伴随比例）
+    """
+    stats = {}
+    tag_works = {}
+    total = 0
+    for rec in records:
+        src = rec.get("source_tag") or ""
+        if context_tag and src != context_tag:
+            continue
+        total += 1
+        try:
+            tags = json.loads(rec.get("tags") or "[]")
+        except Exception:
+            continue
+        if not isinstance(tags, list):
+            continue
+        norm = {_norm_tag(x) for x in tags}
+        keys = {_FUNC_LOOKUP[n] for n in norm if n in _FUNC_LOOKUP}
+        for k in keys:                              # 伴随比例：只要出现过就算
+            tag_works[k] = tag_works.get(k, 0) + 1
+        if rec.get("status") == "filtered" or not keys:
+            continue
+        weight = 0.0
+        st = rec.get("status")
+        if st == "removed":
+            weight = 1.0                        # 整组删除 = 明确的「不喜欢」信号
+        elif st == "pruned" and count_partial:
+            pages = int(rec.get("page_count") or 1)
+            left = len(rec.get("file_list") or [])
+            ratio = max(0.0, min(1.0, (pages - left) / pages)) if pages else 0.0
+            if ratio <= 0:
+                ratio = 1.0            # 兜底：状态为 pruned 但页数信息缺失
+            weight = min(0.5, ratio)  # 挑片删除是弱信号：封顶 0.5
+        for k in keys:
+            ent = stats.setdefault(k, [0, 0.0])
+            ent[0] += 1
+            ent[1] += weight
+    baseline = set()
+    if total > 0:
+        for t, n in tag_works.items():
+            if n / total >= assoc_ratio:
+                baseline.add(t)
+    return stats, baseline, total
+
+
+def learn_tag_stats(records, context_tag=None):
+    """兼容入口：只返回功能性标签计数（不分上下文时 context_tag 留空）"""
+    stats, _baseline, _total = learn_context_stats(records, context_tag)
+    return stats
+
+
+def learn_tag_penalties(stats, min_seen, exclude=None):
+    """标签的删除比例（0-1）；样本不足、从未被删、或属于基础标签的不参与"""
+    out = {}
+    for tag, (seen, pruned) in stats.items():
+        if exclude and tag in exclude:      # 与搜索标签高度伴随 → 视为基础标签
+            continue
+        if pruned <= 0 or seen < max(1, int(min_seen or 1)):
+            continue
+        out[tag] = min(1.0, pruned / seen)
+    return out
+
+
+def learn_work_penalty(tags, penalties):
+    """作品命中的最大删除比例 + 对应标签（无命中返回 0 / ""）"""
+    best, best_tag = 0.0, ""
+    if not penalties or not tags:
+        return 0.0, ""
+    for t in tags:
+        tag = _FUNC_LOOKUP.get(_norm_tag(t))
+        if not tag:
+            continue
+        r = penalties.get(tag, 0.0)
+        if r > best:
+            best, best_tag = r, tag
+    return best, best_tag
 
 
 # ============================================================
@@ -435,6 +593,32 @@ def ensure_logged_in(driver):
         except OSError:
             pass
     manual_login(driver)
+
+
+def check_login_from_cookies():
+    """仅用本地 cookies.pkl 检查登录状态（不启动浏览器）。
+
+    返回 (state, msg): state = True(已登录) / False(未登录或已失效) / None(无法判断)
+    """
+    cf = CONFIG["cookie_file"]
+    if not os.path.exists(cf):
+        return None, "未找到登录信息（首次使用需登录一次）"
+    try:
+        with open(cf, "rb") as f:
+            cookies = pickle.load(f)
+    except Exception as e:
+        return None, f"登录信息读取失败（{e}）"
+    if not isinstance(cookies, list) or not cookies:
+        return None, "登录信息为空（首次使用需登录一次）"
+    try:
+        state = _session_logged_in(_make_session(cookies))
+    except Exception as e:
+        return None, f"无法判断登录状态（{e}）"
+    if state is True:
+        return True, "已登录"
+    if state is False:
+        return False, "未登录或登录已失效（下次运行会重新打开浏览器登录）"
+    return None, "无法判断登录状态（检查代理 / 网络后重试）"
 
 
 # ============================================================
@@ -931,7 +1115,8 @@ def download_image(url, path, referer, api_session):
 # ============================================================
 
 _HIST_COLS = ("illust_id title author author_id like_count is_r18 page_count "
-              "tags url status reason folder files created_at updated_at").split()
+              "tags url status reason folder files created_at updated_at "
+              "source_tag").split()
 
 
 def _file_ok(path):
@@ -951,33 +1136,38 @@ class HistoryStore:
 
     状态:
       downloaded = 全部页面都在(将被跳过, 不再下载)
-      missing    = 图片被手动删除/下载不完整(重新出现时补下载缺失的页)
-      pruned     = 用户只删了一部分（视为有意筛选，不再补下；全部删完时会变回 missing）
+      missing    = 文件不完整或整体被清理(下次重新下载缺失的页)
+      pruned     = 用户只删了一部分（视为有意筛选，不再补下）
+      removed    = 用户把整个作品删掉了（视为主观不喜欢：不再补下，并计入偏好学习）
       filtered   = 被过滤条件排除(低赞/AI 等; 默认也跳过, 可把
                    dedup_skip_filtered 设为 False 让它们每次重新检查)
 
     手动删除图片的同步:
-      每次运行开始时 reconcile() 会检查所有记录的文件是否还在，并区分两种删除：
-        - 整个作品的文件全没了 → missing（可能是整体清理）→ 下次重新下载
+      每次运行开始时 reconcile() 会检查所有记录的文件是否还在，并区分删除意图：
+        - 整个作品的文件全没了 → removed（视为主观不喜欢）→ 不再补下；
+          例外：一次对账里绝大多数记录都被全删（≥90% 且至少 3 条）→ 更像批量清理 → missing（重新下载），
+          也可把 CONFIG['redownload_deleted'] 设为 True 让整组删除总是按清理处理
         - 只删了一部分（挑掉不好看的）→ pruned → 视为有意保留，不再补下
       运行中遇到文件缺失的也会即时改状态。
     """
 
     _UPSERT = """INSERT INTO works
         (illust_id,title,author,author_id,like_count,is_r18,page_count,
-         tags,url,status,reason,folder,files,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         tags,url,status,reason,folder,files,created_at,updated_at,source_tag)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(illust_id) DO UPDATE SET
             title=excluded.title, author=excluded.author,
             author_id=excluded.author_id, like_count=excluded.like_count,
             is_r18=excluded.is_r18, page_count=excluded.page_count,
             tags=excluded.tags, url=excluded.url, status=excluded.status,
             reason=excluded.reason, folder=excluded.folder,
-            files=excluded.files, updated_at=excluded.updated_at"""
+            files=excluded.files, updated_at=excluded.updated_at,
+            source_tag=excluded.source_tag"""
 
-    def __init__(self, db_path, skip_filtered=True):
+    def __init__(self, db_path, skip_filtered=True, source_tag=""):
         self.db_path = db_path
         self.skip_filtered = skip_filtered
+        self.source_tag = source_tag       # 该作品是在哪个搜索标签下被处理的（偏好学习分上下文用）
         self.conn = None
         self.records = {}
 
@@ -998,8 +1188,13 @@ class HistoryStore:
             reason     TEXT,
             folder     TEXT,
             files      TEXT,
+            source_tag TEXT,
             created_at TEXT,
             updated_at TEXT)""")
+        # 旧库迁移：补充 source_tag 列（缺失时旧记录的该列为空，不参与偏好学习）
+        cols = {row[1] for row in self.conn.execute("PRAGMA table_info(works)")}
+        if "source_tag" not in cols:
+            self.conn.execute("ALTER TABLE works ADD COLUMN source_tag TEXT DEFAULT ''")
         self.conn.commit()
         self.records = {}
         for row in self.conn.execute(f"SELECT {','.join(_HIST_COLS)} FROM works"):
@@ -1019,12 +1214,13 @@ class HistoryStore:
                 self.conn = None
 
     def summary(self):
-        n = {"downloaded": 0, "missing": 0, "filtered": 0, "pruned": 0}
+        n = {"downloaded": 0, "missing": 0, "filtered": 0, "pruned": 0, "removed": 0}
         for r in self.records.values():
             if r.get("status") in n:
                 n[r["status"]] += 1
         return (f"共 {len(self.records)} 条（已下载 {n['downloaded']} / "
-                f"文件缺失 {n['missing']} / 已精选 {n['pruned']} / 已过滤 {n['filtered']}）")
+                f"文件缺失 {n['missing']} / 已精选 {n['pruned']} / "
+                f"已移除 {n['removed']} / 已过滤 {n['filtered']}）")
 
     # ---------------- 文件状态 ----------------
     @staticmethod
@@ -1051,19 +1247,51 @@ class HistoryStore:
         # 文件数本来就少于页数：之前被标记为 pruned（用户删掉了多余的页）则保持 pruned
         return "pruned" if rec.get("status") == "pruned" else "missing"
 
+    # 整组删除的语义判定：一次对账里「全删」占比 ≥ 90%（且至少 3 条）→ 更像是批量清理
+    _WHOLESALE_MIN = 3
+    _WHOLESALE_RATIO_PCT = 90
+
     def reconcile(self):
         """对账: 同步被手动删除/恢复的文件状态。
 
-        - 整个作品全删 → missing（下次重新下载）
+        - 整个作品全删 → removed（视为主观不喜欢：不再补下，并计入偏好学习）
+          例外 1：一次对账里绝大多数记录都被全删（更像批量清理）→ missing（下次重新下载）
+          例外 2：CONFIG['redownload_deleted'] = True → 总是按清理处理
         - 只删了一部分 → pruned（视为有意保留，不再补下）
         - 文件恢复齐全 → downloaded
-        返回 (变为 missing 的条数, 变为 pruned 的条数, 恢复为 downloaded 的条数)
+        返回 (变为 missing, 变为 pruned, 恢复为 downloaded, 变为 removed)
         """
-        to_missing = to_pruned = to_done = 0
+        checked = fully_deleted = 0
         for rec in self.records.values():
             if rec.get("status") not in ("downloaded", "missing", "pruned"):
                 continue
+            files = rec.get("file_list") or []
+            if not files:
+                continue
+            checked += 1
+            if not any(_file_ok(f) for f in files):
+                fully_deleted += 1
+        threshold = max(self._WHOLESALE_MIN,
+                        (checked * self._WHOLESALE_RATIO_PCT + 99) // 100)
+        wholesale = bool(checked) and fully_deleted >= threshold
+        redownload = bool(CONFIG.get("redownload_deleted", False))
+
+        to_missing = to_pruned = to_done = to_removed = 0
+        for rec in self.records.values():
+            st = rec.get("status")
+            if st not in ("downloaded", "missing", "pruned", "removed"):
+                continue
+            if st == "removed":
+                # 已判定为主观删除：仅在按清理处理（开关 / 整批清理）时恢复为待下载
+                if redownload or wholesale:
+                    rec["status"] = "missing"
+                    self._set_status(rec)
+                    to_missing += 1
+                continue
             new = self._eval_status(rec)
+            if new == "missing" and st in ("downloaded", "pruned") \
+                    and not wholesale and not redownload:
+                new = "removed"                     # 主观删除：不再补下
             if new == rec["status"]:
                 continue
             rec["status"] = new
@@ -1076,9 +1304,11 @@ class HistoryStore:
                 to_missing += 1
             elif new == "pruned":
                 to_pruned += 1
+            elif new == "removed":
+                to_removed += 1
             else:
                 to_done += 1
-        return to_missing, to_pruned, to_done
+        return to_missing, to_pruned, to_done, to_removed
 
     def _set_files(self, rec):
         try:
@@ -1117,8 +1347,11 @@ class HistoryStore:
             self._set_status(rec)
             return False, ""
         if st == "pruned":
-            # 用户主动删掉了一部分（视为有意筛选）→ 不再补下；全部删完时对账会变回 missing
+            # 用户主动删掉了一部分（视为有意筛选）→ 不再补下；全部删完时对账会变 removed
             return True, "已精选保留"
+        if st == "removed":
+            # 整组删除（视为主观不喜欢）→ 不再补下；可在设置里改为「整组删除后重新下载」
+            return True, "已移除·不再补下"
         if st == "filtered" and self.skip_filtered:
             return True, "已过滤"
         return False, ""
@@ -1135,9 +1368,14 @@ class HistoryStore:
             1 if rec.get("is_r18") else 0, rec.get("page_count", 1),
             rec.get("tags", "[]"), rec.get("url", ""), rec.get("status", ""),
             rec.get("reason", ""), rec.get("folder", ""), rec.get("files", "[]"),
-            rec.get("created_at", _now()), rec.get("updated_at", _now())))
+            rec.get("created_at", _now()), rec.get("updated_at", _now()),
+            rec.get("source_tag", "")))
         self.conn.commit()
         self.records[str(rec["illust_id"])] = rec
+
+    def _source_tag_of(self, d=None):
+        """当前作品所属的搜索标签（显式指定优先，否则用本次运行的标签）"""
+        return self.source_tag or (d or {}).get("source_tag") or CONFIG.get("tag", "")
 
     def record_downloaded(self, d, folder, files, expected):
         """记录已处理的作品。files: 实际存在的文件列表; expected: 应有页数"""
@@ -1162,6 +1400,7 @@ class HistoryStore:
             "files": json.dumps(present, ensure_ascii=False),
             "created_at": old.get("created_at") or now,
             "updated_at": now,
+            "source_tag": self._source_tag_of(d),
         }
         rec["file_list"] = present
         self._upsert(rec)
@@ -1187,6 +1426,7 @@ class HistoryStore:
             "files": old.get("files") or "[]",
             "created_at": old.get("created_at") or now,
             "updated_at": now,
+            "source_tag": old.get("source_tag") or self._source_tag_of(d),
         }
         rec["file_list"] = old.get("file_list") or []
         self._upsert(rec)
@@ -1216,6 +1456,7 @@ def clear_history():
 # GUI/外部调用钩子
 _log_callback = None       # 日志回调: fn(str)
 _ask_callback = None       # 低产提醒回调: fn(info) -> "lower"/"continue"（GUI 注入）
+_status_callback = None    # 运行状态回调: fn(info dict)（GUI 注入，用于主界面显示阶段/进度）
 _stop_flag = False         # 停止标志
 
 
@@ -1230,6 +1471,21 @@ def _log(msg):
             _log_callback(msg)
         except Exception:
             pass
+
+
+def _status(**info):
+    """上报运行状态（阶段 / 已下载 / 目标），供界面显示进度；回调异常不影响爬取。
+
+    info 常用键：state（starting/searching/filtering/downloading）、
+    phase（阶段文案）、downloaded、target。
+    """
+    cb = _status_callback
+    if not cb:
+        return
+    try:
+        cb(info)
+    except Exception:
+        pass
 
 
 def _should_stop():
@@ -1294,11 +1550,13 @@ def _ask_low_yield(info):
     return "lower" if str(ans).lower() == "lower" else "continue"
 
 
-def run_scraper(config_override=None, log_callback=None, ask_callback=None):
+def run_scraper(config_override=None, log_callback=None, ask_callback=None,
+                status_callback=None):
     # 可外部调用的入口，返回 {"ok": True/False, ...}
-    global _log_callback, _ask_callback, _stop_flag
+    global _log_callback, _ask_callback, _status_callback, _stop_flag
     _log_callback = log_callback
     _ask_callback = ask_callback
+    _status_callback = status_callback
     _stop_flag = False
     original = dict(CONFIG)
     if config_override:
@@ -1310,13 +1568,15 @@ def run_scraper(config_override=None, log_callback=None, ask_callback=None):
         CONFIG.update(original)
         _log_callback = None
         _ask_callback = None
+        _status_callback = None
         _stop_flag = False
 
 
 def _main_impl():
     sep = "=" * 60
     r18_mode = "仅R18" if CONFIG.get("r18_only") else ("不含R18" if not CONFIG.get("include_r18", True) else "含R18")
-    _log(f"\n{sep}\n  Pixiv Scraper\n  标签: {CONFIG['tag']}"
+    _status(state="starting", phase="准备中…", target=CONFIG.get("max_images", 0), downloaded=0)
+    _log(f"\n{sep}\n  Pixiv Scraper  v{VERSION}\n  标签: {CONFIG['tag']}"
          f" | 排序: {CONFIG['order']} | 目标: {CONFIG['max_images']} 张"
          f"\n  最低点赞: {CONFIG['min_likes']} | AI过滤: {CONFIG['filter_ai']}"
          f" | R18模式: {r18_mode}"
@@ -1338,16 +1598,59 @@ def _main_impl():
                                    skip_filtered=CONFIG.get("dedup_skip_filtered", True))
             history.open()
             _log(f"[*] 查重库: {CONFIG['history_db']} | {history.summary()}")
-            to_missing, to_pruned, to_done = history.reconcile()
+            to_missing, to_pruned, to_done, to_removed = history.reconcile()
             if to_missing:
-                _log(f"[*] 查重: {to_missing} 条记录被整体删除 → 下次将重新下载")
+                _log(f"[*] 查重: {to_missing} 条记录被整体删除 → 视为清理，下次将重新下载")
             if to_pruned:
                 _log(f"[*] 查重: {to_pruned} 条记录只删了一部分 → 视为有意保留，不再补下")
+            if to_removed:
+                _log(f"[*] 查重: {to_removed} 条作品被整组删除 → 视为不喜欢，不再补下（计入偏好学习；"
+                     f"想重新下载可在设置里开启「整组删除后重新下载」）")
             if to_done:
                 _log(f"[*] 查重: {to_done} 条记录的文件已恢复（状态更新为已下载）")
         except Exception as e:
             _log(f"[!] 查重库打开失败（本次不做去重）: {e}")
             history = None
+
+    # ---- 删除偏好学习（beta）：从「已精选」记录统计功能性标签，后续降低其排序权重 ----
+    #   按搜索标签分上下文统计；排除与搜索标签「高度伴随」的基础标签；
+    #   默认只统计「整组删除」（挑片删除多为清理重复图/无用图，默认不计入）
+    tag_penalties_map = {}
+    if history is not None and CONFIG.get("learn_prefer", True):
+        try:
+            ctx_tag = CONFIG.get("tag", "")
+            count_partial = bool(CONFIG.get("learn_from_partial", False))
+            tstats, baseline, ctx_total = learn_context_stats(
+                history.records.values(), ctx_tag,
+                float(CONFIG.get("prefer_assoc_ratio", 0.6) or 0.6), count_partial)
+            tag_penalties_map = learn_tag_penalties(
+                tstats, int(CONFIG.get("prefer_min_seen", 3) or 3), baseline)
+            partial_cnt = sum(1 for r in history.records.values()
+                              if (r.get("source_tag") or "") == ctx_tag
+                              and r.get("status") == "pruned")
+            partial_note = (not count_partial and partial_cnt > 0)
+            if tag_penalties_map:
+                top = sorted(tag_penalties_map.items(), key=lambda kv: -kv[1])[:6]
+                desc = "、".join(f"{t} -{int(r * 100)}%" for t, r in top)
+                _log(f"[*] 偏好学习: 「{ctx_tag}」（{ctx_total} 条记录）统计 {len(tstats)} 个功能性标签，"
+                     f"降低 {len(tag_penalties_map)} 个标签的权重（{desc}）")
+                if baseline:
+                    names = "、".join(sorted(baseline)[:6])
+                    more = "…" if len(baseline) > 6 else ""
+                    _log(f"    其中 {len(baseline)} 个标签与该标签高度伴随（视为基础标签，未参与）: {names}{more}")
+                if partial_note:
+                    _log(f"    另有 {partial_cnt} 条挑片删除（同一作品只删了几页）默认未计入；"
+                         f"需要时可开启「挑片删除计入偏好学习」")
+            elif ctx_total == 0:
+                _log(f"[*] 偏好学习: 「{ctx_tag}」还没有历史记录（偏好按搜索标签分别学习）")
+            elif partial_note:
+                _log(f"[*] 偏好学习: 「{ctx_tag}」目前只有 {partial_cnt} 条挑片删除，默认不计入；"
+                     f"需要时可开启「挑片删除计入偏好学习」")
+            else:
+                _log(f"[*] 偏好学习: 「{ctx_tag}」暂无足够删除样本（删掉部分图片后会自动学习）")
+        except Exception as e:
+            _log(f"[!] 偏好学习失败（本次不启用）: {e}")
+            tag_penalties_map = {}
 
     driver = None
     try:
@@ -1358,6 +1661,7 @@ def _main_impl():
         if _should_stop():
             return {"ok": False, "reason": "用户停止"}
 
+        _status(state="starting", phase="检查登录状态…", target=CONFIG.get("max_images", 0))
         ensure_logged_in(driver)
 
         if _should_stop():
@@ -1414,6 +1718,9 @@ def _main_impl():
                     items = search_api(api, CONFIG["tag"], CONFIG["order"],
                                        pages[mode], mode)
                     pages_scanned += 1
+                    _status(state="searching",
+                            phase=f"搜索作品（第 {pages_scanned} 页）",
+                            collected=len(candidates))
                     if not items:
                         _log(f"  [{mode}] 第 {pages[mode]} 页无结果，结束")
                         mode_done[mode] = True
@@ -1450,6 +1757,10 @@ def _main_impl():
                 if _should_stop():
                     return {"ok": False, "reason": "用户停止"}
                 processed.add(c["illust_id"])
+                _status(state="filtering",
+                        phase=f"筛选详情 {len(processed)}/{len(candidates)}",
+                        found=len(details), target=target,
+                        low=stats["low"], ai=stats["ai"], niche=stats["niche"])
                 d = detail_api(api, c["illust_id"])
                 d["title"] = d["title"] or c.get("title", "")
                 d["author"] = d["author"] or c.get("user_name", "")
@@ -1487,7 +1798,12 @@ def _main_impl():
                     lbl = "x 性癖"
                     # 不写入查重库：调整「允许的性癖」后下次运行可以重新尝试
                 else:
+                    pen, pen_tag = learn_work_penalty(d["tags"], tag_penalties_map)
+                    d["penalty"] = pen
+                    d["penalty_tag"] = pen_tag
                     lbl = f"OK likes{likes} {imgs}图"
+                    if pen:
+                        lbl += f" 偏好-{int(pen * 100)}%({pen_tag})"
                     details.append(d)
 
                 _log(f"  [{len(processed)}/{len(candidates)}] {c['illust_id']}: "
@@ -1502,6 +1818,7 @@ def _main_impl():
                     sug, est, sample = _low_yield_suggest(all_likes, target, min_likes)
                     if sug < min_likes:
                         warned_once = True
+                        _status(state="filtering", phase="等待确认：是否放宽最低点赞…")
                         _log(f"  [!] 效率提醒：已检查 {len(processed)} 个作品，"
                              f"仅 {len(details)}/{target} 个满足「≥{min_likes} 赞」")
                         _log(f"      建议：放宽到 ≥{sug} 赞（按已扫描 {sample} 个作品的样本估算，"
@@ -1573,7 +1890,13 @@ def _main_impl():
             _log("[*] 没有符合条件的作品可下载")
             return {"ok": True, "downloaded": 0, "skipped_dup": skipped_dup}
 
-        details.sort(key=lambda x: x["like_count"], reverse=True)
+        strength = max(0, min(100, int(CONFIG.get("prefer_strength", 50) or 0))) / 100.0
+        for d in details:
+            d["weight"] = d["like_count"] * (1 - strength * float(d.get("penalty") or 0.0))
+        details.sort(key=lambda x: (x["weight"], x["like_count"]), reverse=True)
+        lowered = sum(1 for d in details if d.get("penalty"))
+        if lowered and strength > 0:
+            _log(f"[*] 偏好排序: {lowered} 个作品因删除偏好下调权重（强度 {int(strength * 100)}%）")
         if details:
             ls = [d["like_count"] for d in details]
             _log(f"[*] 点赞范围: {min(ls)} ~ {max(ls)}, 平均: {sum(ls)//len(ls)}")
@@ -1582,6 +1905,8 @@ def _main_impl():
         dl = 0
         meta = []
         base = os.path.join(CONFIG["download_dir"], sanitize(CONFIG["tag"]))
+        dl_total = min(len(details), CONFIG["max_images"])
+        _status(state="downloading", phase="下载图片", downloaded=dl, target=dl_total)
 
         for d in details:
             if _should_stop():
@@ -1589,6 +1914,7 @@ def _main_impl():
                 break
             if dl >= CONFIG["max_images"]:
                 break
+            _status(state="downloading", phase="下载图片", downloaded=dl, target=dl_total)
 
             is_r18 = d["is_r18"]
             if is_r18 and not CONFIG["include_r18"]:
@@ -1653,6 +1979,7 @@ def _main_impl():
 
             if ok_cnt:
                 dl += 1
+                _status(state="downloading", phase="下载图片", downloaded=dl, target=dl_total)
                 meta.append({"illust_id": lid, "title": title, "author": author,
                              "author_id": d["author_id"], "like_count": likes,
                              "view_count": d.get("view_count", 0),

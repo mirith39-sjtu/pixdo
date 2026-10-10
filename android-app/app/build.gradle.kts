@@ -11,8 +11,8 @@ android {
         applicationId = "com.pixivscraper"
         minSdk = 26
         targetSdk = 34
-        versionCode = 18
-        versionName = "1.2.1"
+        versionCode = 20
+        versionName = "1.3"
     }
 
     buildTypes {

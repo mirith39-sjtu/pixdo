@@ -19,6 +19,14 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/** 运行进度快照（主页面显示用） */
+data class RunProgress(
+    val phase: String = "",
+    val downloading: Boolean = false,
+    val downloaded: Int = 0,
+    val target: Int = 0,
+)
+
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     var config by mutableStateOf(loadConfig(app))
@@ -40,6 +48,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var pendingAsk by mutableStateOf<LowYieldAsk?>(null)
         private set
 
+    /** 运行进度（阶段 / 下载进度），由 RunState 轮询同步给界面 */
+    var progress by mutableStateOf(RunProgress())
+        private set
+
+    /** 最近一次运行结果：null = 还没跑过，true = 完成，false = 中断 */
+    var lastRunOk by mutableStateOf<Boolean?>(null)
+        private set
+
     private var job: Job? = null
 
     @Volatile
@@ -52,6 +68,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             while (true) {
                 val a = RunState.pendingAsk
                 if (pendingAsk?.id != a?.id) pendingAsk = a
+                val p = RunProgress(
+                    phase = RunState.phase,
+                    downloading = RunState.downloading,
+                    downloaded = RunState.downloaded,
+                    target = RunState.target,
+                )
+                if (progress != p) progress = p
                 delay(400)
             }
         }
@@ -78,6 +101,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (running) return
         running = true
         stopFlag = false
+        lastRunOk = null
         logs.value = emptyList()
         statusText = "运行中…"
         val cfg = config
@@ -113,6 +137,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 RunState.endReason = if (result.ok) null
                     else result.reason.ifBlank { "任务未完成，请查看应用内日志" }
                 running = false
+                lastRunOk = result.ok
                 statusText = if (result.ok) {
                     buildString {
                         append("完成 — 下载 ${result.downloaded} 个作品")
@@ -216,9 +241,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 r18Only = sp.getBoolean("r18Only", d.r18Only),
                 dedup = sp.getBoolean("dedup", d.dedup),
                 dedupSkipFiltered = sp.getBoolean("dedupSkipFiltered", d.dedupSkipFiltered),
+                redownloadDeleted = sp.getBoolean("redownloadDeleted", d.redownloadDeleted),
                 filterNicheR18 = sp.getBoolean("filterNicheR18", d.filterNicheR18),
                 allowedNiche = (sp.getString("allowedNiche", "") ?: "")
                     .split(',').map { it.trim() }.filter { it.isNotEmpty() },
+                learnPrefer = sp.getBoolean("learnPrefer", d.learnPrefer),
+                learnFromPartial = sp.getBoolean("learnFromPartial", d.learnFromPartial),
+                preferStrength = sp.getInt("preferStrength", d.preferStrength),
                 notifyRun = sp.getBoolean("notifyRun", d.notifyRun),
             )
         }
@@ -234,8 +263,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 .putBoolean("r18Only", c.r18Only)
                 .putBoolean("dedup", c.dedup)
                 .putBoolean("dedupSkipFiltered", c.dedupSkipFiltered)
+                .putBoolean("redownloadDeleted", c.redownloadDeleted)
                 .putBoolean("filterNicheR18", c.filterNicheR18)
                 .putString("allowedNiche", c.allowedNiche.joinToString(","))
+                .putBoolean("learnPrefer", c.learnPrefer)
+                .putBoolean("learnFromPartial", c.learnFromPartial)
+                .putInt("preferStrength", c.preferStrength)
                 .putBoolean("notifyRun", c.notifyRun)
                 .apply()
         }

@@ -10,9 +10,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.pixivscraper.ui.HelpScreen
+import com.pixivscraper.ui.AppTabs
+import com.pixivscraper.ui.LogScreen
 import com.pixivscraper.ui.LoginScreen
-import com.pixivscraper.ui.MainScreen
 import com.pixivscraper.ui.PixivScraperTheme
 
 class MainActivity : ComponentActivity() {
@@ -22,24 +22,29 @@ class MainActivity : ComponentActivity() {
         setContent {
             PixivScraperTheme {
                 val vm: MainViewModel = viewModel()
-                var screen by rememberSaveable { mutableStateOf("main") }
+                // tab: 0=爬取 1=操作说明 2=设置 3=关于
+                var tab by rememberSaveable { mutableStateOf(0) }
+                // screen: tabs=顶部分页，login / log 为独立页面
+                var screen by rememberSaveable { mutableStateOf("tabs") }
 
-                BackHandler(enabled = screen != "main") { screen = "main" }
+                BackHandler(enabled = screen != "tabs") { screen = "tabs" }
 
                 when (screen) {
                     "login" -> LoginScreen(
-                        onBack = { screen = "main" },
+                        onBack = { screen = "tabs" },
                         onLoggedIn = {
                             vm.refreshLogin()
-                            screen = "main"
+                            screen = "tabs"
                             Toast.makeText(this, "登录成功", Toast.LENGTH_SHORT).show()
                         },
                     )
-                    "help" -> HelpScreen(onBack = { screen = "main" })
-                    else -> MainScreen(
+                    "log" -> LogScreen(vm = vm, onBack = { screen = "tabs" })
+                    else -> AppTabs(
                         vm = vm,
+                        tab = tab,
+                        onTabChange = { tab = it },
                         onOpenLogin = { screen = "login" },
-                        onOpenHelp = { screen = "help" },
+                        onOpenLog = { screen = "log" },
                     )
                 }
             }

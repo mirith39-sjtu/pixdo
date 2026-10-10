@@ -21,6 +21,13 @@ class ScraperEngine(private val context: Context) {
         /** 低产提醒：基础阈值（详情检查条数）；实际阈值 = max(该值, 目标数×10) */
         private const val LOW_YIELD_BASE = 500
 
+        /** 偏好学习：标签至少被下载过 N 次才参与统计 */
+        private const val PREFER_MIN_SEEN = 3
+
+        /** 整组删除的语义判定：一次对账里「全删」占比 ≥90%（且至少 3 条）→ 更像批量清理 */
+        private const val WHOLESALE_MIN = 3
+        private const val WHOLESALE_RATIO_PCT = 90
+
         /** 询问等待上限；超时按「继续查找」处理 */
         private const val ASK_TIMEOUT_MS = 120_000L
     }
@@ -74,23 +81,82 @@ class ScraperEngine(private val context: Context) {
             // ---- 查重库：加载 + 与磁盘对账（手动删除的图片在这里被检测到） ----
             if (config.dedup) {
                 try {
-                    val d = HistoryDb(context)
+                    val d = HistoryDb(context, config.tag)
                     db = d
                     records = HashMap(d.loadAll())
                     index = HashSet(store.buildIndex())
                     val downloaded = records.values.count { it.status == "downloaded" }
                     val missing = records.values.count { it.status == "missing" }
                     val pruned = records.values.count { it.status == "pruned" }
+                    val removed = records.values.count { it.status == "removed" }
                     val filtered = records.values.count { it.status == "filtered" }
-                    log("[*] 查重库: 共 ${records.size} 条（已下载 $downloaded / 文件缺失 $missing / 已精选 $pruned / 已过滤 $filtered）")
-                    val rc = reconcile(records, index, d)
-                    if (rc.toMissing > 0) log("[*] 查重: ${rc.toMissing} 条记录被整体删除 → 下次将重新下载")
+                    log(
+                        "[*] 查重库: 共 ${records.size} 条（已下载 $downloaded / 文件缺失 $missing / " +
+                            "已精选 $pruned / 已移除 $removed / 已过滤 $filtered）"
+                    )
+                    val rc = reconcile(records, index, d, config.redownloadDeleted)
+                    if (rc.toMissing > 0) log("[*] 查重: ${rc.toMissing} 条记录被整体删除 → 视为清理，下次将重新下载")
                     if (rc.toPruned > 0) log("[*] 查重: ${rc.toPruned} 条记录只删了一部分 → 视为有意保留，不再补下")
+                    if (rc.toRemoved > 0) {
+                        log(
+                            "[*] 查重: ${rc.toRemoved} 条作品被整组删除 → 视为不喜欢，不再补下" +
+                                "（计入偏好学习；可在设置里开启「整组删除后重新下载」）"
+                        )
+                    }
                     if (rc.toDone > 0) log("[*] 查重: ${rc.toDone} 条记录的文件已恢复（状态更新为已下载）")
                 } catch (e: Exception) {
                     log("[!] 查重库打开失败（本次不做去重）: ${e.message}")
                     db = null
                     records = HashMap()
+                }
+            }
+
+            // ---- 删除偏好学习（beta）：从「已精选」记录统计功能性标签，后续降低其排序权重 ----
+            //   按搜索标签分上下文，并排除与该标签「高度伴随」的基础标签（如贫乳角色下的「贫乳」）
+            var tagPenalties: Map<String, Double> = emptyMap()
+            if (config.learnPrefer && db != null) {
+                try {
+                    val works = records.values.map {
+                        PreferenceLearner.WorkTags(
+                            it.tags, it.status == "pruned", it.pageCount, it.files.size,
+                            sourceTag = it.sourceTag,
+                            removed = it.status == "removed",
+                        )
+                    }
+                    val ctx = PreferenceLearner.buildContextStats(
+                        works, config.tag, countPartial = config.learnFromPartial,
+                    )
+                    tagPenalties = PreferenceLearner.penalties(ctx.counts, PREFER_MIN_SEEN, ctx.baseline)
+                    val partialCnt = records.values.count {
+                        it.sourceTag == config.tag && it.status == "pruned"
+                    }
+                    val partialNote = !config.learnFromPartial && partialCnt > 0
+                    when {
+                        tagPenalties.isNotEmpty() -> {
+                            val desc = tagPenalties.entries.sortedByDescending { it.value }.take(6)
+                                .joinToString("、") { "${it.key} -${(it.value * 100).toInt()}%" }
+                            log(
+                                "[*] 偏好学习: 「${config.tag}」（${ctx.total} 条记录）统计 ${ctx.counts.size} " +
+                                    "个功能性标签，降低 ${tagPenalties.size} 个标签的权重（$desc）"
+                            )
+                            if (ctx.baseline.isNotEmpty()) {
+                                log("    其中 ${ctx.baseline.size} 个标签与该标签高度伴随（视为基础标签，未参与）")
+                            }
+                            if (partialNote) {
+                                log("    另有 $partialCnt 条挑片删除（同一作品只删了几页）默认未计入；" +
+                                    "需要时可开启「挑片删除计入偏好学习」")
+                            }
+                        }
+                        ctx.total == 0 ->
+                            log("[*] 偏好学习: 「${config.tag}」还没有历史记录（偏好按搜索标签分别学习）")
+                        partialNote ->
+                            log("[*] 偏好学习: 「${config.tag}」目前只有 $partialCnt 条挑片删除，默认不计入；" +
+                                "需要时可开启「挑片删除计入偏好学习」")
+                        else ->
+                            log("[*] 偏好学习: 「${config.tag}」暂无足够删除样本（删掉部分图片后会自动学习）")
+                    }
+                } catch (e: Exception) {
+                    log("[!] 偏好学习失败（本次不启用）: ${e.message}")
                 }
             }
 
@@ -119,6 +185,7 @@ class ScraperEngine(private val context: Context) {
             val lowYieldStep = maxOf(LOW_YIELD_BASE, target * 10)
             var warnAsked = false                          // 每次运行只提醒一次
             val lowLikesDetails = ArrayList<WorkDetail>()  // 仅因点赞不足被过滤（放宽后从这里补回）
+            val penCache = HashMap<String, Pair<Double, String>>()  // id -> (偏好削减, 命中标签)
             var lowCount = 0
             var aiCount = 0
             var noImgCount = 0
@@ -228,7 +295,13 @@ class ScraperEngine(private val context: Context) {
                             // 不写入查重库：调整「允许的性癖」后下次运行可以重新尝试
                         }
                         else -> {
-                            label = "OK likes$likes ${imgNum}图"
+                            val (pen, penTag) = PreferenceLearner.workPenalty(d.tags, tagPenalties)
+                            penCache[d.id] = pen to penTag
+                            label = if (pen > 0) {
+                                "OK likes$likes ${imgNum}图 偏好-${(pen * 100).toInt()}%($penTag)"
+                            } else {
+                                "OK likes$likes ${imgNum}图"
+                            }
                             details.add(d)
                         }
                     }
@@ -334,7 +407,16 @@ class ScraperEngine(private val context: Context) {
                 return RunResult(true, downloaded = 0, skippedDup = skippedDup)
             }
 
-            details.sortByDescending { it.likeCount }
+            val strength = config.preferStrength.coerceIn(0, 100) / 100.0
+            details.sortWith(
+                compareByDescending<WorkDetail> {
+                    it.likeCount * (1 - strength * (penCache[it.id]?.first ?: 0.0))
+                }.thenByDescending { it.likeCount }
+            )
+            val lowered = details.count { (penCache[it.id]?.first ?: 0.0) > 0.0 }
+            if (lowered > 0 && strength > 0) {
+                log("[*] 偏好排序: $lowered 个作品因删除偏好下调权重（强度 ${config.preferStrength}%）")
+            }
             val ls = details.map { it.likeCount }
             log("[*] 点赞范围: ${ls.min()} ~ ${ls.max()}, 平均: ${ls.sum() / ls.size}")
 
@@ -448,11 +530,18 @@ class ScraperEngine(private val context: Context) {
 
     // ---------------- 查重逻辑（与桌面版一致） ----------------
 
-    private data class ReconcileResult(val toMissing: Int, val toPruned: Int, val toDone: Int)
+    private data class ReconcileResult(
+        val toMissing: Int,
+        val toPruned: Int,
+        val toDone: Int,
+        val toRemoved: Int,
+    )
 
     /**
      * 对账：同步被手动删除/恢复的文件状态。
-     * - 整个作品全删 → missing（下次重新下载）
+     * - 整个作品全删 → removed（视为主观不喜欢：不再补下，并计入偏好学习）
+     *   例外：一次对账里绝大多数记录都被全删（更像批量清理）→ missing（重新下载）
+     *   ；config.redownloadDeleted = true 时总是按清理处理
      * - 只删了一部分 → pruned（视为有意保留，不再补下）
      * - 文件恢复齐全 → downloaded
      */
@@ -460,13 +549,45 @@ class ScraperEngine(private val context: Context) {
         records: Map<String, HistoryDb.WorkRecord>,
         index: Set<String>,
         db: HistoryDb,
+        redownloadDeleted: Boolean,
     ): ReconcileResult {
+        var checked = 0
+        var fullyDeleted = 0
+        for (rec in records.values) {
+            if (rec.status != "downloaded" && rec.status != "missing" && rec.status != "pruned") continue
+            if (rec.files.isEmpty()) continue
+            checked++
+            if (rec.files.none { it in index }) fullyDeleted++
+        }
+        // 整组删除占比 ≥90%（且至少 3 条）→ 更像批量清理
+        val threshold = maxOf(WHOLESALE_MIN, (checked * WHOLESALE_RATIO_PCT + 99) / 100)
+        val wholesale = checked > 0 && fullyDeleted >= threshold
+
         var toMissing = 0
         var toPruned = 0
         var toDone = 0
+        var toRemoved = 0
         for (rec in records.values) {
-            if (rec.status != "downloaded" && rec.status != "missing" && rec.status != "pruned") continue
-            val newStatus = evalStatus(rec, index)
+            if (rec.status != "downloaded" && rec.status != "missing" &&
+                rec.status != "pruned" && rec.status != "removed"
+            ) {
+                continue
+            }
+            if (rec.status == "removed") {
+                // 已判定为主观删除：仅在按清理处理（开关 / 整批清理）时恢复为待下载
+                if (redownloadDeleted || wholesale) {
+                    rec.status = "missing"
+                    safeCall { db.setStatus(rec.id, "missing") }
+                    toMissing++
+                }
+                continue
+            }
+            var newStatus = evalStatus(rec, index)
+            if (newStatus == "missing" && (rec.status == "downloaded" || rec.status == "pruned") &&
+                !wholesale && !redownloadDeleted
+            ) {
+                newStatus = "removed"              // 主观删除：不再补下
+            }
             if (newStatus == rec.status) continue
             rec.status = newStatus
             if (newStatus == "pruned") {
@@ -477,10 +598,11 @@ class ScraperEngine(private val context: Context) {
             when (newStatus) {
                 "missing" -> toMissing++
                 "pruned" -> toPruned++
+                "removed" -> toRemoved++
                 else -> toDone++
             }
         }
-        return ReconcileResult(toMissing, toPruned, toDone)
+        return ReconcileResult(toMissing, toPruned, toDone, toRemoved)
     }
 
     /** 删除行为判断：全删 → missing；部分删 → pruned；齐全 → downloaded */
@@ -520,7 +642,8 @@ class ScraperEngine(private val context: Context) {
                 false
             }
         }
-        "pruned" -> true // 用户主动删了一部分（视为有意筛选）→ 不再补下；全删时对账会变回 missing
+        "pruned" -> true // 用户主动删了一部分（视为有意筛选）→ 不再补下
+        "removed" -> true // 整组删除（视为主观不喜欢）→ 不再补下；可在设置里改为重新下载
         "filtered" -> skipFiltered
         else -> false
     }
