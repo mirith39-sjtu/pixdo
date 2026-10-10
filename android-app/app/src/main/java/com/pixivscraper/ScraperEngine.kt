@@ -123,8 +123,14 @@ class ScraperEngine(private val context: Context) {
                             removed = it.status == "removed",
                         )
                     }
-                    val ctx = PreferenceLearner.buildContextStats(works, config.tag)
+                    val ctx = PreferenceLearner.buildContextStats(
+                        works, config.tag, countPartial = config.learnFromPartial,
+                    )
                     tagPenalties = PreferenceLearner.penalties(ctx.counts, PREFER_MIN_SEEN, ctx.baseline)
+                    val partialCnt = records.values.count {
+                        it.sourceTag == config.tag && it.status == "pruned"
+                    }
+                    val partialNote = !config.learnFromPartial && partialCnt > 0
                     when {
                         tagPenalties.isNotEmpty() -> {
                             val desc = tagPenalties.entries.sortedByDescending { it.value }.take(6)
@@ -136,9 +142,16 @@ class ScraperEngine(private val context: Context) {
                             if (ctx.baseline.isNotEmpty()) {
                                 log("    其中 ${ctx.baseline.size} 个标签与该标签高度伴随（视为基础标签，未参与）")
                             }
+                            if (partialNote) {
+                                log("    另有 $partialCnt 条挑片删除（同一作品只删了几页）默认未计入；" +
+                                    "需要时可开启「挑片删除计入偏好学习」")
+                            }
                         }
                         ctx.total == 0 ->
                             log("[*] 偏好学习: 「${config.tag}」还没有历史记录（偏好按搜索标签分别学习）")
+                        partialNote ->
+                            log("[*] 偏好学习: 「${config.tag}」目前只有 $partialCnt 条挑片删除，默认不计入；" +
+                                "需要时可开启「挑片删除计入偏好学习」")
                         else ->
                             log("[*] 偏好学习: 「${config.tag}」暂无足够删除样本（删掉部分图片后会自动学习）")
                     }

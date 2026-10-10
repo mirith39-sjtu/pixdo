@@ -67,6 +67,8 @@ CONFIG = {
     "allowed_niche": [],               # 允许下载的类别 key（见 NICHE_FETISHES，空列表 = 全部过滤）
     # ---- 删除偏好学习（beta：从删除行为学习不喜欢的标签并降低其权重）----
     "learn_prefer": True,              # True = 根据「已精选」(用户删过) 统计功能性标签偏好
+    "learn_from_partial": False,       # True = 挑片删除（同一作品只删了几页）也计入学习（权重封顶 0.5）
+                                       #   False(默认) = 只看「整组删除」——清理重复图/无用图不会影响学习
     "prefer_strength": 50,             # 权重削减强度（0-100；越大影响越明显）
     "prefer_min_seen": 3,              # 标签至少被下载过 N 次才参与统计
     "prefer_assoc_ratio": 0.6,         # 与搜索标签高度伴随（出现比例≥该值）的标签视为「基础标签」不参与学习
@@ -191,7 +193,7 @@ for _cat, _tags in FUNC_TAGS:
         _FUNC_LOOKUP[_t.strip().lower()] = _t
 
 
-def learn_context_stats(records, context_tag=None, assoc_ratio=0.6):
+def learn_context_stats(records, context_tag=None, assoc_ratio=0.6, count_partial=False):
     """按「搜索标签」统计：功能性标签的下载/删除计数 + 与搜索标签高度伴随的标签。
 
     为什么要分上下文：
@@ -200,13 +202,19 @@ def learn_context_stats(records, context_tag=None, assoc_ratio=0.6):
       · 如果某个标签几乎出现在该搜索标签下的所有作品里（如贫乳角色下的「贫乳」），
         它其实是这个标签下的「基础/身份特征」，删除行为不应归因于它。
 
+    删除信号强度：
+      · removed（整组作品全删）→ 权重 1.0：明确的「不喜欢这个作品」
+      · pruned（同一作品只删了几页，如清理重复图/无用图）→ 默认不计入（count_partial=False）；
+        开启后权重 = 删掉页数占比，但封顶 0.5（用户留下了作品，属于弱信号）
+
     参数:
       records: 查重记录（含 source_tag / status / tags / page_count / file_list）。
       context_tag: 只统计 source_tag 等于它的记录；空值 = 统计全部（旧版兼容）。
       assoc_ratio: 出现比例 ≥ 该值 → 视为基础标签，不参与学习。
+      count_partial: 挑片删除（pruned）是否计入删除权重。
 
     返回 (stats, baseline, total)：
-      stats    = {功能标签: [下载数, 删除权重]}（filtered 记录不计入删除权重）
+      stats    = {功能标签: [下载数, 删除权重]}（filtered 记录不计入）
       baseline = 与该搜索标签高度伴随的功能标签集合
       total    = 该上下文下的作品总数（用于伴随比例）
     """
@@ -234,12 +242,13 @@ def learn_context_stats(records, context_tag=None, assoc_ratio=0.6):
         st = rec.get("status")
         if st == "removed":
             weight = 1.0                        # 整组删除 = 明确的「不喜欢」信号
-        elif st == "pruned":
+        elif st == "pruned" and count_partial:
             pages = int(rec.get("page_count") or 1)
             left = len(rec.get("file_list") or [])
-            weight = max(0.0, min(1.0, (pages - left) / pages)) if pages else 0.0
-            if weight <= 0:
-                weight = 1.0            # 兜底：状态为 pruned 但页数信息缺失
+            ratio = max(0.0, min(1.0, (pages - left) / pages)) if pages else 0.0
+            if ratio <= 0:
+                ratio = 1.0            # 兜底：状态为 pruned 但页数信息缺失
+            weight = min(0.5, ratio)  # 挑片删除是弱信号：封顶 0.5
         for k in keys:
             ent = stats.setdefault(k, [0, 0.0])
             ent[0] += 1
@@ -1604,16 +1613,22 @@ def _main_impl():
             history = None
 
     # ---- 删除偏好学习（beta）：从「已精选」记录统计功能性标签，后续降低其排序权重 ----
-    #   按搜索标签分上下文统计，并排除与该标签「高度伴随」的基础标签（如贫乳角色下的「贫乳」）
+    #   按搜索标签分上下文统计；排除与搜索标签「高度伴随」的基础标签；
+    #   默认只统计「整组删除」（挑片删除多为清理重复图/无用图，默认不计入）
     tag_penalties_map = {}
     if history is not None and CONFIG.get("learn_prefer", True):
         try:
             ctx_tag = CONFIG.get("tag", "")
+            count_partial = bool(CONFIG.get("learn_from_partial", False))
             tstats, baseline, ctx_total = learn_context_stats(
                 history.records.values(), ctx_tag,
-                float(CONFIG.get("prefer_assoc_ratio", 0.6) or 0.6))
+                float(CONFIG.get("prefer_assoc_ratio", 0.6) or 0.6), count_partial)
             tag_penalties_map = learn_tag_penalties(
                 tstats, int(CONFIG.get("prefer_min_seen", 3) or 3), baseline)
+            partial_cnt = sum(1 for r in history.records.values()
+                              if (r.get("source_tag") or "") == ctx_tag
+                              and r.get("status") == "pruned")
+            partial_note = (not count_partial and partial_cnt > 0)
             if tag_penalties_map:
                 top = sorted(tag_penalties_map.items(), key=lambda kv: -kv[1])[:6]
                 desc = "、".join(f"{t} -{int(r * 100)}%" for t, r in top)
@@ -1623,8 +1638,14 @@ def _main_impl():
                     names = "、".join(sorted(baseline)[:6])
                     more = "…" if len(baseline) > 6 else ""
                     _log(f"    其中 {len(baseline)} 个标签与该标签高度伴随（视为基础标签，未参与）: {names}{more}")
+                if partial_note:
+                    _log(f"    另有 {partial_cnt} 条挑片删除（同一作品只删了几页）默认未计入；"
+                         f"需要时可开启「挑片删除计入偏好学习」")
             elif ctx_total == 0:
                 _log(f"[*] 偏好学习: 「{ctx_tag}」还没有历史记录（偏好按搜索标签分别学习）")
+            elif partial_note:
+                _log(f"[*] 偏好学习: 「{ctx_tag}」目前只有 {partial_cnt} 条挑片删除，默认不计入；"
+                     f"需要时可开启「挑片删除计入偏好学习」")
             else:
                 _log(f"[*] 偏好学习: 「{ctx_tag}」暂无足够删除样本（删掉部分图片后会自动学习）")
         except Exception as e:

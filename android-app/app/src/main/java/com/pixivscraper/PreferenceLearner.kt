@@ -2,8 +2,13 @@ package com.pixivscraper
 
 /**
  * 删除偏好学习（beta）：
- * 从「已精选(pruned，用户删掉了一部分)」的查重记录中统计功能性标签，
+ * 从「已精选(pruned)」与「已移除(removed)」的查重记录中统计功能性标签，
  * 计算每个标签的删除比例；下载排序时按比例降低其权重（不会直接排除）。
+ *
+ * 删除信号的强度：
+ *  · removed（整组作品全删）→ 权重 1.0：明确的「不喜欢这个作品」
+ *  · pruned（同一作品只删了几页，多为清理重复图 / 无用图）→ 默认不计入；
+ *    开启「挑片删除计入偏好学习」后权重 = 删掉页数占比，但封顶 0.5（弱信号）
  *
  * 两个防误判措施：
  *  1) 按搜索标签分上下文：同一个标签在不同搜索标签下含义可能相反（搜索贫乳角色时删掉「巨乳」版本，
@@ -17,6 +22,9 @@ object PreferenceLearner {
 
     /** 与搜索标签高度伴随的判定阈值：出现比例 ≥ 该值 → 视为「基础标签」，不参与学习 */
     const val ASSOC_RATIO = 0.6
+
+    /** 挑片删除（删掉部分页）的权重上限：保留作品属于弱信号，不能等同于整组删除 */
+    const val PARTIAL_WEIGHT_CAP = 0.5
 
     /** 功能性标签词库：分类名 -> 标签列表（pixiv 常用日文为主，附常见英文/中文写法） */
     val FUNC_TAGS: Map<String, List<String>> = linkedMapOf(
@@ -103,11 +111,13 @@ object PreferenceLearner {
     /**
      * 按搜索标签统计：只统计 [WorkTags.sourceTag] 等于 [contextTag] 的记录。
      * [contextTag] 为空时统计全部（旧版行为）。
+     * [countPartial] = false 时「挑片删除」（pruned）不计入删除权重（默认行为）。
      */
     fun buildContextStats(
         works: List<WorkTags>,
         contextTag: String,
         assocRatio: Double = ASSOC_RATIO,
+        countPartial: Boolean = false,
     ): ContextStats {
         val stats = LinkedHashMap<String, Counts>()
         val tagWorks = LinkedHashMap<String, Int>()
@@ -126,10 +136,11 @@ object PreferenceLearner {
             var weight = 0.0
             if (w.removed) {
                 weight = 1.0                        // 整组删除 = 明确的「不喜欢」信号
-            } else if (w.pruned) {
+            } else if (w.pruned && countPartial) {
                 val totalPages = if (w.pageCount > 0) w.pageCount else 1
-                weight = ((totalPages - w.remainFiles).toDouble() / totalPages).coerceIn(0.0, 1.0)
-                if (weight <= 0.0) weight = 1.0   // 兜底：状态为已精选但页数信息缺失
+                var ratio = ((totalPages - w.remainFiles).toDouble() / totalPages).coerceIn(0.0, 1.0)
+                if (ratio <= 0.0) ratio = 1.0     // 兜底：状态为已精选但页数信息缺失
+                weight = minOf(PARTIAL_WEIGHT_CAP, ratio)   // 挑片删除是弱信号：封顶 0.5
             }
             for (k in keys) {
                 val c = stats.getOrPut(k) { Counts() }

@@ -293,8 +293,9 @@ GUIDE_ITEMS = [
     ("· 内置常见小众性癖的标签库，默认全部过滤（仅对 R18 作品生效）\n"
      "· 在「设置」页勾选允许的类别后，这些类别的作品才会下载", "b"),
     ("删除偏好学习（beta）", "h"),
-    ("· 从「只删了一部分」的作品里统计功能性标签（题材、服装、风格等），\n"
-     "   下次运行自动降低它们的排序权重（不会直接排除）\n"
+    ("· 默认只看「整组删除」的作品（视为明确不喜欢），下次运行降低其标签的排序权重\n"
+     "· 「挑片删除」（同一作品只删了几页，例如清理重复图 / 无用图）默认不计入学习，\n"
+     "   可在「设置」页勾选「挑片删除也计入偏好学习」开始计入（权重会封顶）\n"
      "· 角色名、作品名、系列名等身份标签不参与统计；与该标签高度伴随的\n"
      "   基础标签（例如角色本身就是贫乳时的「贫乳」）同样不会被计入\n"
      "· 偏好按搜索标签分别学习：换标签后旧偏好不会串台\n"
@@ -627,15 +628,19 @@ class PixivGUI:
         # ---- 删除偏好学习（beta） ----
         learn = ttk.LabelFrame(inner, text="删除偏好学习（beta）", padding=10)
         learn.pack(fill=tk.X, pady=(0, 8))
-        self._desc(learn, "根据你删掉部分图片的行为，自动统计不喜欢的标签，并在排序时降低它们的权重"
-                          "（只影响顺序，不会直接排除）。偏好按搜索标签分别学习；"
-                          "与该标签高度伴随的基础特征（例如角色本身就是贫乳）不会被计入。").pack(anchor="w")
+        self._desc(learn, "根据你的删除行为，自动统计不喜欢的标签并在排序时降低它们的权重"
+                          "（只影响顺序，不会直接排除）。默认只看「整组删除」——"
+                          "清理重复图 / 无用图不会影响学习；偏好按搜索标签分别学习。").pack(anchor="w")
         row = ttk.Frame(learn)
         row.pack(fill=tk.X, pady=(6, 0))
         self.learn_var = tk.BooleanVar(value=scraper.CONFIG.get("learn_prefer", True))
         ttk.Checkbutton(row, text="启用删除偏好学习", variable=self.learn_var,
                         command=self._sync_conditions).pack(side=tk.LEFT)
         self.learn_content = ttk.Frame(learn)
+        self.learn_from_partial_var = tk.BooleanVar(
+            value=scraper.CONFIG.get("learn_from_partial", False))
+        ttk.Checkbutton(self.learn_content, text="挑片删除也计入偏好学习",
+                        variable=self.learn_from_partial_var).pack(side=tk.LEFT, padx=(0, 16))
         ttk.Label(self.learn_content, text="偏好削减强度(%):").pack(side=tk.LEFT, padx=(0, 4))
         self.prefer_strength_var = tk.IntVar(value=scraper.CONFIG.get("prefer_strength", 50))
         ttk.Spinbox(self.learn_content, from_=0, to=100, increment=10,
@@ -1000,6 +1005,7 @@ class PixivGUI:
             "filter_niche_r18": self.filter_niche_var.get(),
             "allowed_niche": list(self.allowed_niche),
             "learn_prefer": self.learn_var.get(),
+            "learn_from_partial": self.learn_from_partial_var.get(),
             "prefer_strength": self.prefer_strength_var.get(),
         }
 

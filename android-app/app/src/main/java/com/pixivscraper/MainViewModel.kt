@@ -246,6 +246,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 allowedNiche = (sp.getString("allowedNiche", "") ?: "")
                     .split(',').map { it.trim() }.filter { it.isNotEmpty() },
                 learnPrefer = sp.getBoolean("learnPrefer", d.learnPrefer),
+                learnFromPartial = sp.getBoolean("learnFromPartial", d.learnFromPartial),
                 preferStrength = sp.getInt("preferStrength", d.preferStrength),
                 notifyRun = sp.getBoolean("notifyRun", d.notifyRun),
             )
@@ -266,6 +267,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 .putBoolean("filterNicheR18", c.filterNicheR18)
                 .putString("allowedNiche", c.allowedNiche.joinToString(","))
                 .putBoolean("learnPrefer", c.learnPrefer)
+                .putBoolean("learnFromPartial", c.learnFromPartial)
                 .putInt("preferStrength", c.preferStrength)
                 .putBoolean("notifyRun", c.notifyRun)
                 .apply()

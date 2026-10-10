@@ -179,9 +179,9 @@ fun SettingsScreen(vm: MainViewModel, onOpenLogin: () -> Unit) {
         // ---- 删除偏好学习（beta）：强度只在开关打开时出现 ----
         SettingCard(
             title = "删除偏好学习（beta）",
-            desc = "根据你删掉部分图片的行为，自动统计不喜欢的标签，并在排序时降低它们的权重" +
-                "（只影响顺序，不会直接排除）。偏好按搜索标签分别学习；" +
-                "与该标签高度伴随的基础特征（例如角色本身就是贫乳）不会被计入。",
+            desc = "根据你的删除行为，自动统计不喜欢的标签并在排序时降低它们的权重（只影响顺序，" +
+                "不会直接排除）。默认只看「整组删除」——清理重复图 / 无用图不会影响学习。" +
+                "偏好按搜索标签分别学习；与标签高度伴随的基础特征不会被计入。",
             control = {
                 Switch(checked = config.learnPrefer, onCheckedChange = { v ->
                     vm.updateConfig { c -> c.copy(learnPrefer = v) }
@@ -189,6 +189,9 @@ fun SettingsScreen(vm: MainViewModel, onOpenLogin: () -> Unit) {
             },
             extra = {
                 if (config.learnPrefer) {
+                    SwitchRow("挑片删除也计入偏好学习", config.learnFromPartial) { v ->
+                        vm.updateConfig { c -> c.copy(learnFromPartial = v) }
+                    }
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             text = "偏好削减强度 ${config.preferStrength}%",

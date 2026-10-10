@@ -27,7 +27,7 @@ class PreferenceLearnerTest {
             w("全彩", "巨乳"),
             w("触手", pruned = true, page = 2, left = 1),           // 样本不足
         )
-        val ctx = PreferenceLearner.buildContextStats(works, "test")
+        val ctx = PreferenceLearner.buildContextStats(works, "test", countPartial = true)
 
         assertEquals(5, ctx.counts["巨乳"]!!.seen)
         assertEquals(0.75, ctx.counts["巨乳"]!!.pruned, 1e-9)
@@ -65,20 +65,37 @@ class PreferenceLearnerTest {
             w("全彩", source = "B"),
             w("全彩", source = "B"),
         )
-        val ctxA = PreferenceLearner.buildContextStats(works, "A")
-        val ctxB = PreferenceLearner.buildContextStats(works, "B")
+        val ctxA = PreferenceLearner.buildContextStats(works, "A", countPartial = true)
+        val ctxB = PreferenceLearner.buildContextStats(works, "B", countPartial = true)
         assertEquals(6, ctxA.total)
         assertEquals(6, ctxB.total)
         assertEquals(3, ctxA.counts["巨乳"]!!.seen)
         assertEquals(0.5, ctxA.counts["巨乳"]!!.pruned, 1e-9)
-        assertEquals(3.0, ctxB.counts["巨乳"]!!.pruned, 1e-9)
+        assertEquals(1.5, ctxB.counts["巨乳"]!!.pruned, 1e-9)   // 每条封顶 0.5
 
         assertTrue("全彩出现在所有作品里 → 基础标签", "全彩" in ctxA.baseline)
         val penA = PreferenceLearner.penalties(ctxA.counts, 3, ctxA.baseline)
         val penB = PreferenceLearner.penalties(ctxB.counts, 3, ctxB.baseline)
         assertEquals(0.5 / 3, penA["巨乳"]!!, 1e-9)
-        assertEquals(1.0, penB["巨乳"]!!, 1e-9)
+        assertEquals(0.5, penB["巨乳"]!!, 1e-9)
         assertTrue("基础标签被排除", "全彩" !in penA && "全彩" !in penB)
+    }
+
+    @Test
+    fun partialDeletionIgnoredByDefault() {
+        // 清理重复图 / 无用图（同一作品只删了几页）默认不计入学习，也不再算权重
+        val works = List(8) { w("巨乳", "全彩") } +
+            List(2) { w("巨乳", "全彩", pruned = true, page = 10, left = 1) }
+        val ctx = PreferenceLearner.buildContextStats(works, "test")     // countPartial 默认 false
+        assertEquals(10, ctx.counts["巨乳"]!!.seen)
+        assertEquals(0.0, ctx.counts["巨乳"]!!.pruned, 1e-9)
+        // 不传 baseline，确认「没有删除权重」而不是「被当成基础标签」
+        assertTrue(PreferenceLearner.penalties(ctx.counts, 3).isEmpty())
+
+        // 开启后计入，且单条封顶 0.5
+        val ctxOn = PreferenceLearner.buildContextStats(works, "test", countPartial = true)
+        assertEquals(1.0, ctxOn.counts["巨乳"]!!.pruned, 1e-9)          // 2 条 × 0.5
+        assertEquals(0.1, PreferenceLearner.penalties(ctxOn.counts, 3)["巨乳"]!!, 1e-9)
     }
 
     @Test
@@ -86,7 +103,7 @@ class PreferenceLearnerTest {
         // 该标签下的角色本身就是贫乳 → 「貧乳」几乎出现在所有作品里，不应被计入不喜欢
         val works = List(8) { w("貧乳", "天童ケイ") } +
             List(2) { w("貧乳", "天童ケイ", pruned = true, page = 2, left = 1) }
-        val ctx = PreferenceLearner.buildContextStats(works, "test")
+        val ctx = PreferenceLearner.buildContextStats(works, "test", countPartial = true)
 
         assertEquals(10, ctx.total)
         assertTrue("貧乳 与搜索标签高度伴随", "貧乳" in ctx.baseline)

@@ -15,6 +15,7 @@ data class ScraperConfig(
     val filterNicheR18: Boolean = true,
     val allowedNiche: List<String> = emptyList(),
     val learnPrefer: Boolean = true,
+    val learnFromPartial: Boolean = false,
     val preferStrength: Int = 50,
     val notifyRun: Boolean = true,
 )
