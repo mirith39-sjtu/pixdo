@@ -23,8 +23,8 @@ from selenium.webdriver.edge.service import Service as EdgeSvc
 _is_frozen = getattr(sys, "frozen", False)
 _base_dir = os.path.dirname(sys.executable) if _is_frozen else os.path.dirname(os.path.abspath(__file__))
 
-# beta 版本号（正式版发布时另行同步）
-VERSION = "1.3.0-beta.1"
+# 版本号
+VERSION = "1.3"
 
 # ============================================================
 CONFIG = {
@@ -1576,7 +1576,7 @@ def _main_impl():
     sep = "=" * 60
     r18_mode = "仅R18" if CONFIG.get("r18_only") else ("不含R18" if not CONFIG.get("include_r18", True) else "含R18")
     _status(state="starting", phase="准备中…", target=CONFIG.get("max_images", 0), downloaded=0)
-    _log(f"\n{sep}\n  Pixiv Scraper  v{VERSION}（beta）\n  标签: {CONFIG['tag']}"
+    _log(f"\n{sep}\n  Pixiv Scraper  v{VERSION}\n  标签: {CONFIG['tag']}"
          f" | 排序: {CONFIG['order']} | 目标: {CONFIG['max_images']} 张"
          f"\n  最低点赞: {CONFIG['min_likes']} | AI过滤: {CONFIG['filter_ai']}"
          f" | R18模式: {r18_mode}"

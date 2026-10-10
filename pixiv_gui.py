@@ -292,7 +292,7 @@ GUIDE_ITEMS = [
     ("小众性癖过滤（R18）", "h"),
     ("· 内置常见小众性癖的标签库，默认全部过滤（仅对 R18 作品生效）\n"
      "· 在「设置」页勾选允许的类别后，这些类别的作品才会下载", "b"),
-    ("删除偏好学习（beta）", "h"),
+    ("删除偏好学习", "h"),
     ("· 默认只看「整组删除」的作品（视为明确不喜欢），下次运行降低其标签的排序权重\n"
      "· 「挑片删除」（同一作品只删了几页，例如清理重复图 / 无用图）默认不计入学习，\n"
      "   可在「设置」页勾选「挑片删除也计入偏好学习」开始计入（权重会封顶）\n"
@@ -322,7 +322,7 @@ ABOUT_ITEMS = [
     ("版本信息", "h"),
     (f"· 应用名称：pixdo\n"
      f"· 版本号：{scraper.VERSION}\n"
-     f"· 渠道：beta（实验性功能，可能随时调整或回退）\n"
+     f"· 渠道：正式版\n"
      f"· 运行环境：Windows（免安装单文件 exe，需本机安装 Edge / Chrome 用于登录）", "b"),
     ("关于本项目", "h"),
     ("· 本项目（含代码、界面与文案）全部由 AI 生成，仅供个人学习与技术研究使用。\n"
@@ -626,7 +626,7 @@ class PixivGUI:
                         variable=self.redownload_deleted_var).pack(side=tk.LEFT, padx=12)
 
         # ---- 删除偏好学习（beta） ----
-        learn = ttk.LabelFrame(inner, text="删除偏好学习（beta）", padding=10)
+        learn = ttk.LabelFrame(inner, text="删除偏好学习", padding=10)
         learn.pack(fill=tk.X, pady=(0, 8))
         self._desc(learn, "根据你的删除行为，自动统计不喜欢的标签并在排序时降低它们的权重"
                           "（只影响顺序，不会直接排除）。默认只看「整组删除」——"

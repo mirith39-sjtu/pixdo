@@ -69,7 +69,7 @@ fun AboutScreen() {
         Body(
             "· 应用名称：pixdo\n" +
                 "· 版本号：$version\n" +
-                "· 渠道：beta（实验性功能，可能随时调整或回退）\n" +
+                "· 渠道：正式版\n" +
                 "· 运行环境：Android 8.0 及以上"
         )
 
