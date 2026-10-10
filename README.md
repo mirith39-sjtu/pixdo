@@ -2,6 +2,8 @@
 
 > **pixiv 插画批量下载工具** — 按标签 + 点赞数筛选，批量下载你喜欢的作品。支持 Windows 桌面版与 Android 版。
 
+🌐 官网：<https://mirith39-sjtu.github.io/pixdo/> ｜ 📦 下载：[Releases](https://github.com/mirith39-sjtu/pixdo/releases/latest)
+
 <p align="center">
   <img src="icon_preview.png" width="420" alt="pixdo 图标预览">
 </p>
