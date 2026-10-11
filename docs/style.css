@@ -57,8 +57,8 @@ code {
 /* 首屏 */
 .hero {
   position: relative; overflow: hidden;
-  min-height: calc(100vh - 62px);
   display: flex; align-items: center; justify-content: center;
+  padding: 96px 0 88px;
   background: var(--dark);
   color: #fff; text-align: center;
 }
@@ -67,7 +67,7 @@ code {
 }
 .hero::before { width: 520px; height: 520px; background: var(--brand1); top: -160px; left: -120px; }
 .hero::after { width: 520px; height: 520px; background: var(--brand2); bottom: -200px; right: -120px; }
-.hero-inner { position: relative; z-index: 1; padding: 60px 24px; }
+.hero-inner { position: relative; z-index: 1; padding: 0 24px; }
 .hero-icon {
   width: 128px; height: 128px; border-radius: 30px;
   box-shadow: 0 24px 60px rgba(74, 125, 255, .45);
@@ -79,11 +79,6 @@ code {
 }
 .hero .sub { font-size: 21px; color: rgba(255, 255, 255, .82); margin: 0 0 34px; }
 .hero .meta { margin-top: 18px; font-size: 13.5px; color: rgba(255, 255, 255, .5); }
-.scroll-hint {
-  position: absolute; bottom: 26px; left: 50%; transform: translateX(-50%);
-  font-size: 13px; color: rgba(255, 255, 255, .5); animation: float 2.2s ease-in-out infinite;
-}
-@keyframes float { 0%, 100% { transform: translate(-50%, 0); } 50% { transform: translate(-50%, 8px); } }
 
 /* 按钮 */
 .btn {
@@ -102,7 +97,7 @@ code {
 
 /* 功能大栏（每项一屏） */
 .feature {
-  min-height: 88vh; display: flex; align-items: center;
+  padding: 78px 0; display: flex; align-items: center;
   border-bottom: 1px solid var(--line);
 }
 .feature .wrap { width: 100%; }
@@ -146,10 +141,13 @@ code {
 .block + .block { margin-top: 18px; }
 .block h2 { font-size: 20px; margin: 0 0 10px; }
 .block p { margin: 0; color: var(--ink-soft); font-size: 15px; }
-.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: stretch; }
+.grid2 .block + .block { margin-top: 0; }
+.dl-card { display: flex; flex-direction: column; }
 .dl-card h3 { margin: 0 0 4px; font-size: 19px; }
 .dl-card .file { color: var(--ink); font-size: 14px; margin: 0 0 4px; }
 .dl-card .hint { color: var(--ink-soft); font-size: 14px; margin: 0 0 18px; }
+.dl-card .actions { margin-top: auto; }
 .actions { display: flex; gap: 10px; flex-wrap: wrap; }
 ol.steps { margin: 10px 0 0; padding-left: 20px; color: var(--ink-soft); }
 ol.steps li { margin-bottom: 6px; }
@@ -181,9 +179,10 @@ details p { margin: 10px 0 2px; color: var(--ink-soft); font-size: 15px; }
 .risk b { color: #b42318; }
 
 @media (max-width: 900px) {
+  .hero { padding: 64px 0 60px; }
   .hero h1 { font-size: 46px; }
   .hero .sub { font-size: 18px; }
-  .feature { min-height: 0; padding: 64px 0; }
+  .feature { padding: 52px 0; }
   .feature-grid { grid-template-columns: 1fr; gap: 28px; }
   .feature-grid.flip .feature-visual { order: 0; }
   .feature h2 { font-size: 28px; }
