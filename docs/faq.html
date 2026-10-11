@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>常见问题 · pixdo</title>
+<meta name="description" content="pixdo 常见问题：登录、搜索无结果、限流、R18、查重与删除行为。">
+<link rel="canonical" href="https://pixdo.top/faq.html">
+<link rel="icon" href="assets/icon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="index.html"><img src="assets/icon.png" alt="pixdo">pixdo</a>
+    <nav>
+      <a href="index.html">首页</a>
+      <a href="usage.html">使用</a>
+      <a class="on" href="faq.html">常见问题</a>
+      <a href="download.html">下载</a>
+      <a href="changelog.html">更新日志</a>
+      <a href="https://github.com/mirith39-sjtu/pixdo" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="page">
+  <div class="wrap">
+    <h1>常见问题</h1>
+    <p class="lead">没找到答案？到 <a href="https://github.com/mirith39-sjtu/pixdo/issues" target="_blank" rel="noopener">GitHub Issues</a> 反馈。</p>
+
+    <details><summary>一直显示「未登录」？</summary><p>检查代理是否生效，然后在「设置」页重新登录；也可以删除本地 cookies.pkl 后重试。</p></details>
+    <details><summary>搜索没有结果？</summary><p>检查标签拼写（推荐日文 Tag）、排序设置与代理；联想功能需要能访问 pixiv 接口。</p></details>
+    <details><summary>提示 429 限流？</summary><p>程序会自动等待重试，属正常现象；建议保持默认请求间隔。</p></details>
+    <details><summary>R18 作品搜不到？</summary><p>需要处于登录状态，且账号已开启 pixiv 的 R-18 显示设置；游客状态下不会出现 R18 结果。</p></details>
+    <details><summary>删掉的图片会被重新下载吗？</summary><p>只删一部分 → 视为有意保留，不再补下；整组删光 → 视为不喜欢，不再补下；一次几乎删光（≥ 九成）→ 视为批量清理，下次重新下载。也可在设置里改为「整组删除后重新下载」。</p></details>
+    <details><summary>联想不出中文角色名？</summary><p>试试更短的词头（如「百合园」）；部分角色名需要先查过相关标签，之后可走本地缓存命中。</p></details>
+    <details><summary>动图下载后不动？</summary><p>动图会自动下载帧序列并合成为 GIF，帧数多时需要等一会儿；合成完成后到相册查看即可。</p></details>
+    <details><summary>会不会有封号风险？</summary><p>会。短时间大量下载可能被判定为异常访问，建议保持默认间隔、单次不要过多，介意风险请使用小号。</p></details>
+  </div>
+</main>
+
+<footer class="footer">
+  <div class="wrap">
+    <p>pixdo ｜ <a href="index.html">首页</a> ｜ <a href="download.html">下载</a> ｜ <a href="usage.html">使用</a> ｜ <a href="changelog.html">更新日志</a></p>
+    <p class="dim">本项目（含代码、界面与文案）全部由 AI 生成，仅供个人学习与技术研究使用；与 pixiv 官方无关。</p>
+  </div>
+</footer>
+
+</body>
+</html>

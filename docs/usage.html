@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>使用说明 · pixdo</title>
+<meta name="description" content="pixdo 使用说明：Windows 与 Android 的安装与使用步骤。">
+<link rel="canonical" href="https://pixdo.top/usage.html">
+<link rel="icon" href="assets/icon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="index.html"><img src="assets/icon.png" alt="pixdo">pixdo</a>
+    <nav>
+      <a href="index.html">首页</a>
+      <a class="on" href="usage.html">使用</a>
+      <a href="faq.html">常见问题</a>
+      <a href="download.html">下载</a>
+      <a href="changelog.html">更新日志</a>
+      <a href="https://github.com/mirith39-sjtu/pixdo" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="page">
+  <div class="wrap">
+    <h1>使用说明</h1>
+    <p class="lead">先开启代理（需能访问 pixiv），下载见 <a href="download.html">下载页</a>。</p>
+
+    <div class="grid2">
+      <div class="block">
+        <h2>Windows</h2>
+        <ol class="steps">
+          <li>双击 <code>pixdo-v1.3.exe</code>；首次运行会自动打开浏览器等待登录，完成后自动继续</li>
+          <li>在「爬取」页填写标签（支持中文联想），设置数量、最低点赞与 R18 选项</li>
+          <li>点「开始爬取」，运行状态与进度在页面顶部显示，日志在「运行日志」窗口</li>
+          <li>图片保存在程序目录 <code>downloads/&lt;标签&gt;/safe|r18/</code></li>
+        </ol>
+      </div>
+
+      <div class="block">
+        <h2>Android</h2>
+        <ol class="steps">
+          <li>到「设置」页点「登录」，在弹出的页面登录 pixiv 账号（自动检测）</li>
+          <li>下载 R18 需先在 pixiv 网页版开启「設定 → 閲覧設定 → R-18作品の表示」</li>
+          <li>回到「爬取」页填写标签与选项，点「开始爬取」</li>
+          <li>图片保存在相册 <code>Pictures/PixivScraper/&lt;标签&gt;-safe|-r18</code></li>
+        </ol>
+      </div>
+    </div>
+
+    <div class="block">
+      <h2>小提示</h2>
+      <p>下载时可以切到后台或锁屏，进度看通知栏（Android）；凑不够数量时可以降低最低点赞，或换一个更通用的标签；更多问题见 <a href="faq.html">常见问题</a>。</p>
+    </div>
+  </div>
+</main>
+
+<footer class="footer">
+  <div class="wrap">
+    <p>pixdo ｜ <a href="index.html">首页</a> ｜ <a href="download.html">下载</a> ｜ <a href="faq.html">常见问题</a> ｜ <a href="changelog.html">更新日志</a></p>
+    <p class="dim">本项目（含代码、界面与文案）全部由 AI 生成，仅供个人学习与技术研究使用；与 pixiv 官方无关。</p>
+  </div>
+</footer>
+
+</body>
+</html>
