@@ -34,6 +34,10 @@
 | Windows | `pixdo-v1.3.exe` | 免安装，双击即用（需本机装有 Edge / Chrome 用于登录） |
 | Android | `pixdo-v1.3.apk` | 支持 Android 8.0 及以上，直接安装 |
 
+> 🇨🇳 **国内网络免代理直连**：Windows exe 走阿里云 OSS → <https://pixdo-download.oss-cn-hangzhou.aliyuncs.com/pixdo-v1.3.exe>；
+> Android apk 走 GitHub 加速 → <https://gh-proxy.com/https://github.com/mirith39-sjtu/pixdo/releases/download/v1.3/pixdo-v1.3.apk>
+> （加速服务为社区第三方提供，失效时请用上面的 Releases 原始链接）
+
 ## 📱 使用步骤（Android）
 
 1. 开启 VPN / 代理（需能正常访问 pixiv）

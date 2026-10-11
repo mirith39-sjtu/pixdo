@@ -3,8 +3,8 @@
 (function () {
   'use strict';
 
-  var EXE_URL = 'https://github.com/mirith39-sjtu/pixdo/releases/download/v1.3/pixdo-v1.3.exe';
-  var APK_URL = 'https://github.com/mirith39-sjtu/pixdo/releases/download/v1.3/pixdo-v1.3.apk';
+  var EXE_URL = 'https://pixdo-download.oss-cn-hangzhou.aliyuncs.com/pixdo-v1.3.exe';
+  var APK_URL = 'https://gh-proxy.com/https://github.com/mirith39-sjtu/pixdo/releases/download/v1.3/pixdo-v1.3.apk';
   var OS_NAME = { windows: 'Windows', android: 'Android' };
 
   /* ---------- 设备识别 ---------- */
