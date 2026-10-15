@@ -8,6 +8,7 @@ import kotlinx.coroutines.delay
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileInputStream
+import java.security.MessageDigest
 import java.util.zip.ZipInputStream
 import kotlin.math.max
 
@@ -30,6 +31,91 @@ class ScraperEngine(private val context: Context) {
 
         /** 询问等待上限；超时按「继续查找」处理 */
         private const val ASK_TIMEOUT_MS = 120_000L
+    }
+
+    // ---------------- 下载后处理：作品内查重 + 预告图清理 ----------------
+
+    /** 对刚下载完成的作品做后处理；返回 (保留的文件, 删除张数) */
+    private fun postProcessWork(
+        files: List<String>,
+        config: ScraperConfig,
+        store: ImageStore,
+        index: MutableSet<String>,
+        log: (String) -> Unit,
+    ): Pair<List<String>, Int> {
+        val sigs = files.map { signatureOf(store, it) }
+        val drop = WorkPostProcess.plan(
+            sigs,
+            config.dedupeWork,
+            config.dedupeWork && config.dedupeNear,
+            config.dropTrailer,
+        )
+        if (drop.isEmpty()) return files to 0
+        val kept = ArrayList<String>(files.size)
+        var dropped = 0
+        for (i in files.indices) {
+            val key = files[i]
+            val reason = drop[i]
+            if (reason == null) {
+                kept.add(key)
+                continue
+            }
+            if (store.delete(key)) {
+                dropped++
+                index.remove(key)
+                log("     清理 p${pageNoOf(key, i)}：$reason")
+            } else {
+                kept.add(key)          // 删除失败 → 保留
+            }
+        }
+        return kept to dropped
+    }
+
+    /** 读取文件并计算指纹（读不了则 UNKNOWN，永远不会被删） */
+    private fun signatureOf(store: ImageStore, key: String): WorkPostProcess.Sig {
+        val bytes = store.read(key) ?: return WorkPostProcess.Sig.UNKNOWN
+        val md5 = MessageDigest.getInstance("MD5").digest(bytes)
+            .joinToString("") { "%02x".format(it) }
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        val srcW = bounds.outWidth
+        val srcH = bounds.outHeight
+        if (srcW <= 0 || srcH <= 0) return WorkPostProcess.Sig(md5, 0, 0, null, 0.0, 0.0, 0.0, null)
+        val opts = BitmapFactory.Options().apply { inSampleSize = max(1, max(srcW, srcH) / 64) }
+        val raw = runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) }.getOrNull()
+            ?: return WorkPostProcess.Sig(md5, srcW, srcH, null, 0.0, 0.0, 0.0, null)
+        val scaled = Bitmap.createScaledBitmap(raw, 64, 64, true)
+        val px = IntArray(64 * 64)
+        scaled.getPixels(px, 0, 64, 0, 0, 64, 64)
+        if (scaled !== raw) scaled.recycle()
+        raw.recycle()
+        val gray = IntArray(px.size)
+        var sr = 0.0
+        var sg = 0.0
+        var sb = 0.0
+        for (i in px.indices) {
+            val c = px[i]
+            val r = (c shr 16) and 0xFF
+            val g = (c shr 8) and 0xFF
+            val b = c and 0xFF
+            sr += r
+            sg += g
+            sb += b
+            gray[i] = (0.299 * r + 0.587 * g + 0.114 * b).toInt()
+        }
+        val n = px.size.toDouble()
+        return WorkPostProcess.Sig(
+            md5, srcW, srcH,
+            WorkPostProcess.dHashFromGray(gray, 64, 64),
+            sr / n, sg / n, sb / n,
+            WorkPostProcess.blurFromGray(gray, 64, 64),
+        )
+    }
+
+    /** 从文件名里取页号（形如 ..._p3_...） */
+    private fun pageNoOf(key: String, fallback: Int): Int {
+        val m = Regex("_p(\\d+)_").find(key.substringAfterLast('/'))
+        return m?.groupValues?.get(1)?.toIntOrNull() ?: fallback
     }
 
     private data class DownloadMeta(
@@ -425,6 +511,7 @@ class ScraperEngine(private val context: Context) {
             log("[*] 开始下载...")
             onDownloadStart?.invoke()
             var dl = 0
+            var cleanedTotal = 0
             val meta = ArrayList<DownloadMeta>()
 
             for (d in details) {
@@ -489,8 +576,20 @@ class ScraperEngine(private val context: Context) {
                     }
                 }
 
+                var dropped = 0
+                if (!d.isUgoira && saved.size >= 2 && (config.dedupeWork || config.dropTrailer)) {
+                    val (keptFiles, dropCount) = postProcessWork(saved, config, store, index, log)
+                    if (dropCount > 0) {
+                        saved.clear()
+                        saved.addAll(keptFiles)
+                        ok = saved.size
+                        dropped = dropCount
+                        cleanedTotal += dropCount
+                    }
+                }
+
                 if (config.dedup && ok > 0) {
-                    safeCall { db?.upsertDownloaded(d, relFolder, saved) }
+                    safeCall { db?.upsertDownloaded(d, relFolder, saved, max(0, totalPages - dropped)) }
                 }
 
                 if (ok > 0) {
@@ -498,7 +597,8 @@ class ScraperEngine(private val context: Context) {
                     onProgress?.invoke(dl)
                     val tagStr = if (d.isR18) " [R18]" else " [safe]"
                     val kindStr = if (d.isUgoira) " [动图]" else ""
-                    log("  [$dl/${config.maxImages}]$tagStr$kindStr likes ${d.likeCount} ${d.title.take(40)} | $ok/$totalPages")
+                    val cleanStr = if (dropped > 0) " ｜ 清理 $dropped 张" else ""
+                    log("  [$dl/${config.maxImages}]$tagStr$kindStr likes ${d.likeCount} ${d.title.take(40)} | $ok/$totalPages$cleanStr")
                     meta.add(DownloadMeta(d.id, d.title, d.author, d.likeCount, ok, totalPages))
                 }
                 if (dl >= config.maxImages) break
@@ -507,6 +607,7 @@ class ScraperEngine(private val context: Context) {
             log("")
             log("=".repeat(56))
             log("  完成！下载 $dl 个新作品")
+            if (cleanedTotal > 0) log("  下载后清理：删除 $cleanedTotal 张（作品内查重 / 预告图）")
             if (skippedDup > 0) log("  查重跳过 $skippedDup 个已处理过的作品")
             log("  保存位置：相册 Pictures/PixivScraper/${sanitize(config.tag)}-safe（或 -r18）")
             log("=".repeat(56))

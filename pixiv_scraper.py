@@ -5,7 +5,7 @@ Pixiv 图片爬虫 — 按点赞数爬取指定 Tag 下的热门图片
 首次运行需手动登录，之后自动复用 Cookie。
 """
 
-import os, re, io, json, time, pickle, tempfile, urllib.parse, sys, subprocess, threading, traceback, sqlite3, zipfile
+import os, re, io, json, time, pickle, tempfile, urllib.parse, sys, subprocess, threading, traceback, sqlite3, zipfile, hashlib
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
@@ -24,7 +24,7 @@ _is_frozen = getattr(sys, "frozen", False)
 _base_dir = os.path.dirname(sys.executable) if _is_frozen else os.path.dirname(os.path.abspath(__file__))
 
 # 版本号
-VERSION = "1.3"
+VERSION = "1.4.0-beta.1"
 
 # ============================================================
 CONFIG = {
@@ -57,6 +57,10 @@ CONFIG = {
     "redownload_deleted": False,       # True = 整组作品被删除时重新下载（视为清理）
                                        #   False(默认) = 视为主观不喜欢：不再补下，并计入偏好学习
                                        #     （一次对账里几乎全部记录都被删时仍按清理处理，避免误判）
+    # ---- 下载后处理（作品内查重 / 预告图清理；beta 新功能）----
+    "dedupe_work": True,               # True = 每个作品下载完后自动查重，删除完全重复的图
+    "dedupe_near": True,               # True = 近似重复（感知哈希 dHash）也删；同尺寸 + 颜色接近才会删
+    "drop_trailer": True,              # True = 猜测删除作品末页的「预告/广告图」（横向、与其余页比例不符）
     "history_db": os.path.join(_base_dir, "pixiv_history.db"),  # 记录表位置
     "tag_cache_file": os.path.join(_base_dir, "tag_suggest_cache.json"),  # 标签联想缓存
     # ---- 低产提醒（筛选效率过低时询问是否放宽点赞条件）----
@@ -1127,6 +1131,153 @@ def _file_ok(path):
         return False
 
 
+def _md5_of_file(path):
+    """文件 MD5（分块读取；读不了返回 None）"""
+    try:
+        h = hashlib.md5()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+
+def _image_signature(path):
+    """图片指纹：{md5, w, h, dhash, mean_rgb, blur}；无法读取时 None。
+    缺 Pillow 时也能拿到 md5（仅支持完全重复的查重）。"""
+    md5 = _md5_of_file(path)
+    if not md5:
+        return None
+    sig = {"md5": md5, "w": 0, "h": 0, "dhash": None, "mean_rgb": None, "blur": None}
+    if Image is None:
+        return sig
+    try:
+        from PIL import ImageFilter, ImageOps, ImageStat
+        with Image.open(path) as im:
+            im = ImageOps.exif_transpose(im) or im
+            w, h = im.size
+            g = im.convert("L")
+            # dHash：缩成 9×8 灰度，逐行比较相邻像素
+            px = list(g.resize((9, 8), Image.LANCZOS).getdata())
+            bits = 0
+            for r in range(8):
+                for c in range(8):
+                    bits = (bits << 1) | (1 if px[r * 9 + c] > px[r * 9 + c + 1] else 0)
+            mean = ImageStat.Stat(im.convert("RGB").resize((16, 16), Image.LANCZOS)).mean
+            # 模糊度：降采样后边缘幅度的方差（越大越清晰）
+            edge = g.resize((256, 256), Image.LANCZOS).filter(ImageFilter.FIND_EDGES)
+            blur = ImageStat.Stat(edge).var[0]
+            sig.update({"w": w, "h": h, "dhash": bits,
+                        "mean_rgb": tuple(mean), "blur": blur})
+    except Exception:
+        pass
+    return sig
+
+
+def _is_near_duplicate(a, b):
+    """近似重复：尺寸相同(±1px) + dHash 距离≤6 + 平均色接近（避免误删换色变体）"""
+    if not a or not b or a.get("dhash") is None or b.get("dhash") is None:
+        return False
+    if abs(a["w"] - b["w"]) > 1 or abs(a["h"] - b["h"]) > 1:
+        return False
+    if bin(a["dhash"] ^ b["dhash"]).count("1") > 6:
+        return False
+    ma, mb = a.get("mean_rgb"), b.get("mean_rgb")
+    if ma and mb and sum(abs(x - y) for x, y in zip(ma, mb)) / 3.0 > 10:
+        return False
+    return True
+
+
+def _looks_like_trailer(sig, body):
+    """末页是否像「预告/广告图」：横向且与正文比例不符（模糊作辅助）"""
+    if not sig or not body or not sig["w"] or not sig["h"]:
+        return ""
+    aspect = sig["w"] / float(sig["h"])
+    if aspect < 1.05:
+        return ""
+    portrait = sum(1 for b in body if b and b["h"] >= b["w"]) / float(len(body))
+    if aspect >= 1.2 and portrait >= 0.66 and all(
+            (b["w"] / float(b["h"])) < aspect * 0.85 for b in body if b and b["h"]):
+        return f"末页横向 {sig['w']}×{sig['h']}"
+    blurs = sorted(b["blur"] for b in body if b and b.get("blur") is not None)
+    if aspect >= 1.05 and portrait >= 0.8 and blurs and sig.get("blur") is not None:
+        med = blurs[len(blurs) // 2]
+        if med > 12 and sig["blur"] < med * 0.45:
+            return f"末页横向且明显模糊 {sig['w']}×{sig['h']}"
+    return ""
+
+
+def _page_no(path, fallback=0):
+    m = re.search(r"_p(\d+)_", os.path.basename(path))
+    return int(m.group(1)) if m else fallback
+
+
+def postprocess_work(files, log=None):
+    """作品下载完成后的后处理（files 按页顺序）。
+
+    - 作品内查重：完全重复（MD5）删除；近似重复（dHash）可开关
+    - 预告图猜测删除：末页为横向、与其余页比例不符（默认开启）
+    返回 (保留的文件列表, 删除张数)；删除失败的文件会保留
+    """
+    files = [p for p in files if _file_ok(p)]
+    if len(files) < 2:
+        return files, 0
+    do_dedupe = bool(CONFIG.get("dedupe_work", True))
+    do_near = do_dedupe and bool(CONFIG.get("dedupe_near", True))
+    do_trailer = bool(CONFIG.get("drop_trailer", True))
+    if not do_dedupe and not do_trailer:
+        return files, 0
+
+    sigs = [_image_signature(p) for p in files]
+    drop = {}
+    if do_dedupe:
+        first = {}
+        for i, sig in enumerate(sigs):
+            if not sig:
+                continue
+            j = first.get(sig["md5"])
+            if j is None:
+                first[sig["md5"]] = i
+            else:
+                drop[i] = f"与 p{_page_no(files[j], j)} 完全重复"
+        if do_near:
+            rest = [i for i in range(len(files)) if i not in drop]
+            for pos, a in enumerate(rest):
+                if a in drop:
+                    continue
+                for b in rest[pos + 1:]:
+                    if b in drop:
+                        continue
+                    if _is_near_duplicate(sigs[a], sigs[b]):
+                        drop[b] = f"与 p{_page_no(files[a], a)} 近似重复"
+
+    last = len(files) - 1
+    if do_trailer and last not in drop:
+        body = [sigs[i] for i in range(last) if i not in drop]
+        why = _looks_like_trailer(sigs[last], body)
+        if why:
+            drop[last] = f"疑似预告图（{why}）"
+
+    if not drop:
+        return files, 0
+    kept, dropped = [], 0
+    for i, p in enumerate(files):
+        reason = drop.get(i)
+        if not reason:
+            kept.append(p)
+            continue
+        try:
+            os.remove(p)
+        except OSError:
+            kept.append(p)              # 删除失败 → 保留
+            continue
+        dropped += 1
+        if log:
+            log(f"     清理 p{_page_no(p, i)}：{reason}")
+    return kept, dropped
+
+
 def _now():
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -1903,6 +2054,7 @@ def _main_impl():
 
         _log("\n[*] 开始下载...")
         dl = 0
+        purged_total = 0
         meta = []
         base = os.path.join(CONFIG["download_dir"], sanitize(CONFIG["tag"]))
         dl_total = min(len(details), CONFIG["max_images"])
@@ -1974,8 +2126,14 @@ def _main_impl():
                         saved.append(fpath)
                     time.sleep(CONFIG["download_delay"])
 
+            dropped = 0
+            if not is_ugoira and len(saved) >= 2:
+                saved, dropped = postprocess_work(saved, _log)   # 作品内查重 + 预告图清理
+                ok_cnt = len(saved)
+                purged_total += dropped
+
             if history and ok_cnt:
-                history.record_downloaded(d, folder, saved, total_pages)
+                history.record_downloaded(d, folder, saved, max(0, total_pages - dropped))
 
             if ok_cnt:
                 dl += 1
@@ -1988,8 +2146,9 @@ def _main_impl():
                              "ok": ok_cnt, "total": total_pages})
                 r18s = " [R18]" if is_r18 else " [safe]"
                 kind = " [动图]" if is_ugoira else ""
+                cleaned = f" ｜ 清理 {dropped} 张" if dropped else ""
                 _log(f"  [{dl}/{CONFIG['max_images']}]{r18s}{kind} likes {likes:>6} "
-                     f"{title[:40]} | {ok_cnt}/{total_pages}")
+                     f"{title[:40]} | {ok_cnt}/{total_pages}{cleaned}")
 
             if dl >= CONFIG["max_images"]:
                 break
@@ -1998,7 +2157,10 @@ def _main_impl():
         with open(mp, "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
 
-        _log(f"\n{sep}\n  完成！下载 {dl} 个作品\n  目录: {os.path.abspath(base)}\n{sep}")
+        _log(f"\n{sep}\n  完成！下载 {dl} 个作品")
+        if purged_total:
+            _log(f"  下载后清理：删除 {purged_total} 张（作品内查重 / 预告图）")
+        _log(f"  目录: {os.path.abspath(base)}\n{sep}")
         if meta:
             _log("\n  Top 10:")
             for r, m in enumerate(meta[:10], 1):

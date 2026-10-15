@@ -1,7 +1,9 @@
 package com.pixivscraper
 
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
@@ -89,6 +91,55 @@ class ImageStore(private val context: Context) {
     @Suppress("DEPRECATION")
     private fun legacyRoot(): File =
         File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), ROOT_NAME)
+
+    /** 读取已保存文件的内容（找不到返回 null） */
+    fun read(key: String): ByteArray? = try {
+        if (Build.VERSION.SDK_INT >= 29) {
+            uriFor(key)?.let { uri ->
+                context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            }
+        } else {
+            File(key).takeIf { it.isFile }?.readBytes()
+        }
+    } catch (e: Exception) {
+        null
+    }
+
+    /** 删除已保存的文件（成功返回 true） */
+    fun delete(key: String): Boolean {
+        return try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                val uri = uriFor(key) ?: return false
+                context.contentResolver.delete(uri, null, null) > 0
+            } else {
+                File(key).delete()
+            }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /** 由查重 key 找到对应的 MediaStore 条目（仅 Android 10+） */
+    @RequiresApi(Build.VERSION_CODES.Q)
+    private fun uriFor(key: String): Uri? {
+        val rel = key.substringBeforeLast('/', "")
+        val name = key.substringAfterLast('/')
+        if (rel.isEmpty() || name.isEmpty() || !name.contains('.')) return null
+        val selection = "${MediaStore.Images.Media.RELATIVE_PATH}=? AND ${MediaStore.Images.Media.DISPLAY_NAME}=?"
+        context.contentResolver.query(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            arrayOf(MediaStore.Images.Media._ID),
+            selection,
+            arrayOf("$rel/", name),
+            null
+        )?.use { c ->
+            if (c.moveToFirst()) {
+                return ContentUris.withAppendedId(
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI, c.getLong(0))
+            }
+        }
+        return null
+    }
 
     /** 汇总当前相册里本应用保存过的所有文件 key（用于对账/查重） */
     fun buildIndex(): Set<String> = try {

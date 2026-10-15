@@ -607,7 +607,9 @@ class PixivGUI:
         dedup = ttk.LabelFrame(inner, text="查重", padding=10)
         dedup.pack(fill=tk.X, pady=(0, 8))
         self._desc(dedup, "已经下载过的作品不会重复下载；整组删掉的作品视为不喜欢，"
-                          "不再补下并计入偏好学习（一次几乎删光则视为清理，下次重新下载）。").pack(anchor="w")
+                          "不再补下并计入偏好学习（一次几乎删光则视为清理，下次重新下载）。\n"
+                          "下载完成后还会对每个作品做一次整理：完全重复的图会被删除，"
+                          "末页若是横向的「预告 / 广告图」也会被猜测删除。").pack(anchor="w")
         row = ttk.Frame(dedup)
         row.pack(fill=tk.X, pady=(6, 0))
         self.dedup_var = tk.BooleanVar(value=scraper.CONFIG.get("dedup", True))
@@ -624,6 +626,22 @@ class PixivGUI:
             value=scraper.CONFIG.get("redownload_deleted", False))
         ttk.Checkbutton(self.dedup_skip_content, text="整组删除后重新下载（视为清理）",
                         variable=self.redownload_deleted_var).pack(side=tk.LEFT, padx=12)
+
+        # 下载后处理：作品内查重 + 预告图清理
+        row3 = ttk.Frame(dedup)
+        row3.pack(fill=tk.X, pady=(6, 0))
+        self.dedupe_work_var = tk.BooleanVar(value=bool(self._opts.get(
+            "dedupe_work", scraper.CONFIG.get("dedupe_work", True))))
+        ttk.Checkbutton(row3, text="作品内自动查重（删除重复图）",
+                        variable=self.dedupe_work_var).pack(side=tk.LEFT)
+        self.dedupe_near_var = tk.BooleanVar(value=bool(self._opts.get(
+            "dedupe_near", scraper.CONFIG.get("dedupe_near", True))))
+        ttk.Checkbutton(row3, text="近似重复也删（感知哈希）",
+                        variable=self.dedupe_near_var).pack(side=tk.LEFT, padx=12)
+        self.drop_trailer_var = tk.BooleanVar(value=bool(self._opts.get(
+            "drop_trailer", scraper.CONFIG.get("drop_trailer", True))))
+        ttk.Checkbutton(row3, text="删除疑似预告图（末页横向）",
+                        variable=self.drop_trailer_var).pack(side=tk.LEFT, padx=12)
 
         # ---- 删除偏好学习（beta） ----
         learn = ttk.LabelFrame(inner, text="删除偏好学习", padding=10)
@@ -666,6 +684,9 @@ class PixivGUI:
                 json.dump({
                     "filter_niche_r18": bool(self.filter_niche_var.get()),
                     "allowed_niche": list(self.allowed_niche),
+                    "dedupe_work": bool(self.dedupe_work_var.get()),
+                    "dedupe_near": bool(self.dedupe_near_var.get()),
+                    "drop_trailer": bool(self.drop_trailer_var.get()),
                 }, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
@@ -1002,6 +1023,9 @@ class PixivGUI:
             "dedup": self.dedup_var.get(),
             "dedup_skip_filtered": self.dedup_skip_var.get(),
             "redownload_deleted": self.redownload_deleted_var.get(),
+            "dedupe_work": self.dedupe_work_var.get(),
+            "dedupe_near": self.dedupe_near_var.get(),
+            "drop_trailer": self.drop_trailer_var.get(),
             "filter_niche_r18": self.filter_niche_var.get(),
             "allowed_niche": list(self.allowed_niche),
             "learn_prefer": self.learn_var.get(),

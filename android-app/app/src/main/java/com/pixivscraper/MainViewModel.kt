@@ -242,6 +242,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 dedup = sp.getBoolean("dedup", d.dedup),
                 dedupSkipFiltered = sp.getBoolean("dedupSkipFiltered", d.dedupSkipFiltered),
                 redownloadDeleted = sp.getBoolean("redownloadDeleted", d.redownloadDeleted),
+                dedupeWork = sp.getBoolean("dedupeWork", d.dedupeWork),
+                dedupeNear = sp.getBoolean("dedupeNear", d.dedupeNear),
+                dropTrailer = sp.getBoolean("dropTrailer", d.dropTrailer),
                 filterNicheR18 = sp.getBoolean("filterNicheR18", d.filterNicheR18),
                 allowedNiche = (sp.getString("allowedNiche", "") ?: "")
                     .split(',').map { it.trim() }.filter { it.isNotEmpty() },
@@ -264,6 +267,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 .putBoolean("dedup", c.dedup)
                 .putBoolean("dedupSkipFiltered", c.dedupSkipFiltered)
                 .putBoolean("redownloadDeleted", c.redownloadDeleted)
+                .putBoolean("dedupeWork", c.dedupeWork)
+                .putBoolean("dedupeNear", c.dedupeNear)
+                .putBoolean("dropTrailer", c.dropTrailer)
                 .putBoolean("filterNicheR18", c.filterNicheR18)
                 .putString("allowedNiche", c.allowedNiche.joinToString(","))
                 .putBoolean("learnPrefer", c.learnPrefer)

@@ -122,7 +122,8 @@ fun SettingsScreen(vm: MainViewModel, onOpenLogin: () -> Unit) {
         SettingCard(
             title = "查重（跳过已处理的 ID）",
             desc = "已经下载过的作品不会重复下载；整组删掉的作品视为不喜欢，不再补下并计入偏好学习" +
-                "（一次几乎删光则视为清理，下次重新下载）。",
+                "（一次几乎删光则视为清理，下次重新下载）。下载完成后还会整理每个作品：" +
+                "删除完全重复的图，末页若是横向的「预告 / 广告图」也会被猜测删除。",
             control = {
                 Switch(checked = config.dedup, onCheckedChange = { v ->
                     vm.updateConfig { c -> c.copy(dedup = v) }
@@ -136,6 +137,15 @@ fun SettingsScreen(vm: MainViewModel, onOpenLogin: () -> Unit) {
                     SwitchRow("整组删除后重新下载（视为清理）", config.redownloadDeleted) { v ->
                         vm.updateConfig { c -> c.copy(redownloadDeleted = v) }
                     }
+                }
+                SwitchRow("作品内自动查重（下载后删除重复图）", config.dedupeWork) { v ->
+                    vm.updateConfig { c -> c.copy(dedupeWork = v) }
+                }
+                SwitchRow("近似重复也删（感知哈希）", config.dedupeNear) { v ->
+                    vm.updateConfig { c -> c.copy(dedupeNear = v) }
+                }
+                SwitchRow("删除疑似预告 / 广告图（末页横向）", config.dropTrailer) { v ->
+                    vm.updateConfig { c -> c.copy(dropTrailer = v) }
                 }
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     TextButton(onClick = { showClearDialog = true }) { Text("清空查重记录") }

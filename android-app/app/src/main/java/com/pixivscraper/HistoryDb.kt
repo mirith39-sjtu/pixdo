@@ -101,9 +101,10 @@ class HistoryDb(context: Context, private val sourceTag: String = "") :
         writableDatabase.update("works", v, "illust_id=?", arrayOf(id))
     }
 
-    fun upsertDownloaded(d: WorkDetail, folder: String, files: List<String>) {
+    /** expectedPages：写库时的「应有页数」（下载后清理过重复图 / 预告图时传保留后数量） */
+    fun upsertDownloaded(d: WorkDetail, folder: String, files: List<String>, expectedPages: Int = 0) {
         val existing = getRecord(d.id)
-        val expected = d.imageUrls.size
+        val expected = if (expectedPages > 0) expectedPages else d.imageUrls.size
         val status = if (files.isNotEmpty() && files.size >= expected) "downloaded" else "missing"
         val v = ContentValues().apply {
             put("illust_id", d.id)
