@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  var EXE_URL = 'https://gh-proxy.com/https://github.com/mirith39-sjtu/pixdo/releases/download/v1.4/pixdo-v1.4.exe';
+  var EXE_URL = 'https://pixdo-download.oss-cn-hangzhou.aliyuncs.com/pixdo-v1.4.exe';
   var APK_URL = 'https://gh-proxy.com/https://github.com/mirith39-sjtu/pixdo/releases/download/v1.4/pixdo-v1.4.apk';
   var OS_NAME = { windows: 'Windows', android: 'Android' };
 
