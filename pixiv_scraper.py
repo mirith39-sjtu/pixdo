@@ -24,7 +24,7 @@ _is_frozen = getattr(sys, "frozen", False)
 _base_dir = os.path.dirname(sys.executable) if _is_frozen else os.path.dirname(os.path.abspath(__file__))
 
 # 版本号
-VERSION = "1.4.0-beta.1"
+VERSION = "1.4"
 
 # ============================================================
 CONFIG = {
